@@ -1,11 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { User as SupabaseUser } from '@supabase/supabase-js';
+
+type AppUser = SupabaseUser & {
+  user_metadata?: {
+    full_name?: string;
+    avatar_url?: string;
+  };
+};
+
+declare module '../../contexts/AuthContext' {
+  interface AuthContextType {
+    user: AppUser | null;
+    signIn: (email: string, password: string) => Promise<void>;
+    signOut: () => Promise<void>;
+  }
+}
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
-import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
+import { Avatar, AvatarFallback } from '../../components/ui/avatar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../../components/ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { supabase } from '../../utils/supabase/client';
-import { projectId, publicAnonKey } from '../../lib/info';
 import { useAuth } from '../../App';
 import { 
   Plus, 
@@ -20,14 +43,6 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -40,99 +55,122 @@ import { Label } from '../ui/label';
 import { toast } from 'sonner';
 
 // Mock data
-const groups = [
-  {
-    id: '1',
-    name: 'Weekend Trip',
-    description: 'Beach house rental and activities',
-    members: [
-      { id: '1', name: 'You', avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '2', name: 'Sarah', avatar: 'https://images.unsplash.com/photo-1494790108755-2616b612b272?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '3', name: 'Mike', avatar: 'https://images.unsplash.com/photo-1599566150163-29194dcaad36?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '4', name: 'Lisa', avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150&h=150&fit=crop&crop=face&auto=format' }
-    ],
-    totalExpenses: 1248.75,
-    yourBalance: -45.20,
-    lastActivity: '2 hours ago',
-    status: 'active'
-  },
-  {
-    id: '2',
-    name: 'Roommates',
-    description: 'Shared apartment expenses',
-    members: [
-      { id: '1', name: 'You', avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '5', name: 'Alex', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '6', name: 'Jordan', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face&auto=format' }
-    ],
-    totalExpenses: 2847.30,
-    yourBalance: 125.80,
-    lastActivity: '1 day ago',
-    status: 'active'
-  },
-  {
-    id: '3',
-    name: 'Work Lunch Group',
-    description: 'Office lunch orders and team dinners',
-    members: [
-      { id: '1', name: 'You', avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '7', name: 'Emma', avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '8', name: 'David', avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '9', name: 'Sophie', avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '10', name: 'Ryan', avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&h=150&fit=crop&crop=face&auto=format' }
-    ],
-    totalExpenses: 456.90,
-    yourBalance: -12.30,
-    lastActivity: '3 days ago',
-    status: 'active'
-  },
-  {
-    id: '4',
-    name: 'Family Vacation 2024',
-    description: 'Annual family trip expenses',
-    members: [
-      { id: '1', name: 'You', avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '11', name: 'Mom', avatar: 'https://images.unsplash.com/photo-1607746882042-944635dfe10e?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '12', name: 'Dad', avatar: 'https://images.unsplash.com/photo-1540569014015-19a7be504e3a?w=150&h=150&fit=crop&crop=face&auto=format' },
-      { id: '13', name: 'Sister', avatar: 'https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=150&h=150&fit=crop&crop=face&auto=format' }
-    ],
-    totalExpenses: 3240.00,
-    yourBalance: 0,
-    lastActivity: '1 week ago',
-    status: 'settled'
-  }
-];
+// Groups are now fetched from the API
 
 export function Groups() {
   const [searchTerm, setSearchTerm] = useState('');
   const [newGroupName, setNewGroupName] = useState('');
-  const [newGroupDescription, setNewGroupDescription] = useState('');
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [groups, setGroups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const { user } = useAuth();
+  const { user } = useAuth() as { user: AppUser | null };
+
+  // Helper function to get user display info
+  const getUserDisplayInfo = (user: AppUser | null) => ({
+    id: user?.id || '',
+    name: user?.user_metadata?.full_name || 'You',
+    avatar: user?.user_metadata?.avatar_url || 
+      `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.email?.charAt(0).toUpperCase() || 'U')}`
+  });
 
   useEffect(() => {
     const fetchGroups = async () => {
-      if (!user) return;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
 
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.access_token) return;
+        setLoading(true);
+        
+        // First, refresh the session to get a fresh token
+        const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
+        
+        if (refreshError) {
+          console.error('Error refreshing session:', refreshError);
+          throw new Error('Your session has expired. Please log in again.');
+        }
+        
+        if (!session?.access_token) {
+          throw new Error('No active session. Please log in again.');
+        }
 
-        const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-7f88878c/groups`, {
+        console.log('Fetching groups with fresh token...');
+        console.log('Making request to /api/groups...');
+        
+        const response = await fetch('http://localhost:8000/api/groups', {
+          method: 'GET',
           headers: {
             'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json',
           },
+          credentials: 'include', // Important for cookies if using them
         });
 
-        if (response.ok) {
-          const data = await response.json();
-          setGroups(data.groups || []);
+        let responseData;
+        try {
+          responseData = await response.clone().json();
+          console.log('Response data:', responseData);
+        } catch (jsonError) {
+          const textResponse = await response.text();
+          console.error('Failed to parse JSON response:', textResponse);
+          throw new Error(`Invalid server response: ${textResponse.substring(0, 200)}`);
         }
+        
+        if (!response.ok) {
+          console.error('API Error - Status:', response.status, 'Status Text:', response.statusText);
+          console.error('Response Headers:', Object.fromEntries(response.headers.entries()));
+          console.error('Response Body:', responseData);
+          
+          let errorMessage = 'Failed to fetch groups';
+          
+          if (responseData) {
+            if (responseData.details) {
+              errorMessage = `Error: ${responseData.error || 'Unknown error'}`;
+              if (process.env.NODE_ENV === 'development') {
+                console.error('Error details:', responseData.details);
+                if (responseData.trace) {
+                  console.error('Server stack trace:', responseData.trace);
+                }
+              }
+            } else if (responseData.error) {
+              errorMessage = typeof responseData.error === 'string' 
+                ? responseData.error 
+                : JSON.stringify(responseData.error);
+            }
+          } else {
+            errorMessage = `Server returned ${response.status}: ${response.statusText}`;
+          }
+          
+          throw new Error(errorMessage);
+        }
+
+        console.log('Groups data:', responseData);
+        const userInfo = getUserDisplayInfo(user);
+        
+        const transformedGroups = (responseData.groups || []).map((group: any) => ({
+          ...group,
+          // Ensure we have all required fields with defaults
+          id: group.id || '',
+          name: group.name || 'Unnamed Group',
+          created_at: group.created_at || new Date().toISOString(),
+          updated_at: group.updated_at || new Date().toISOString(),
+          members: [userInfo],
+          member_count: group.member_count || 1,
+          total_expenses: group.total_expenses || 0,
+          yourBalance: 0,
+          lastActivity: 'Just now',
+          status: 'active' as const
+        }));
+
+        setGroups(transformedGroups);
       } catch (error) {
-        console.error('Error fetching groups:', error);
+        console.error('Error in fetchGroups:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Failed to load groups';
+        toast.error(errorMessage, {
+          duration: 5000,
+          description: 'Please check your connection and try again.'
+        });
       } finally {
         setLoading(false);
       }
@@ -142,8 +180,7 @@ export function Groups() {
   }, [user]);
 
   const filteredGroups = groups.filter(group =>
-    group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (group.description && group.description.toLowerCase().includes(searchTerm.toLowerCase()))
+    group.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const handleCreateGroup = async () => {
@@ -152,14 +189,26 @@ export function Groups() {
       return;
     }
     
+    if (!user) {
+      toast.error('You must be logged in to create a group');
+      return;
+    }
+
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      console.log('Getting session...');
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        console.error('Session error:', sessionError);
+        throw new Error('Failed to get session');
+      }
+      
       if (!session?.access_token) {
-        toast.error('Please log in to create a group');
-        return;
+        throw new Error('No active session');
       }
 
-      const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-7f88878c/groups`, {
+      console.log('Creating group with name:', newGroupName);
+      const response = await fetch('http://localhost:8000/api/groups', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
@@ -167,37 +216,73 @@ export function Groups() {
         },
         body: JSON.stringify({
           name: newGroupName,
-          description: newGroupDescription,
         }),
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        setGroups(prev => [...prev, data.group]);
-        toast.success('Group created successfully!');
-        setNewGroupName('');
-        setNewGroupDescription('');
-        setIsCreateDialogOpen(false);
-      } else {
-        const error = await response.json();
-        toast.error(error.error || 'Failed to create group');
+      console.log('Response status:', response.status);
+      
+      let responseData;
+      try {
+        responseData = await response.clone().json();
+        console.log('Response data:', responseData);
+      } catch (jsonError) {
+        const textResponse = await response.text();
+        console.error('Failed to parse JSON response:', textResponse);
+        throw new Error(`Invalid server response: ${textResponse.substring(0, 200)}`);
       }
+
+      if (!response.ok) {
+        console.error('API Error - Status:', response.status, 'Status Text:', response.statusText);
+        console.error('Response Headers:', Object.fromEntries(response.headers.entries()));
+        console.error('Response Body:', responseData);
+        
+        let errorMessage = 'Failed to create group';
+        
+        if (responseData) {
+          if (responseData.details) {
+            errorMessage = `Error: ${responseData.error || 'Unknown error'}`;
+            console.error('Error details:', responseData.details);
+            if (responseData.trace) {
+              console.error('Server stack trace:', responseData.trace);
+            }
+          } else if (responseData.error) {
+            errorMessage = typeof responseData.error === 'string' 
+              ? responseData.error 
+              : JSON.stringify(responseData.error);
+          }
+        } else {
+          errorMessage = `Server returned ${response.status}: ${response.statusText}`;
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+      const newGroup = responseData.group || responseData;
+      console.log('Created group:', newGroup);
+      
+      const userInfo = getUserDisplayInfo(user);
+      
+      setGroups(prev => [{
+        ...newGroup,
+        member_count: newGroup.member_count || 1,
+        members: [userInfo],
+        total_expenses: 0,
+        yourBalance: 0,
+        lastActivity: 'Just now',
+        status: 'active' as const
+      }, ...prev]);
+
+      toast.success('Group created successfully!');
+      setNewGroupName('');
+      setIsCreateDialogOpen(false);
     } catch (error) {
-      console.error('Error creating group:', error);
-      toast.error('Failed to create group');
+      console.error('Error in handleCreateGroup:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to create group';
+      toast.error(errorMessage, {
+        duration: 5000,
+        description: 'Please check your connection and try again.'
+      });
     }
-  };
-
-  const getBalanceColor = (balance: number) => {
-    if (balance > 0) return 'text-green-600';
-    if (balance < 0) return 'text-red-600';
-    return 'text-muted-foreground';
-  };
-
-  const getBalanceText = (balance: number) => {
-    if (balance > 0) return `You are owed $${balance.toFixed(2)}`;
-    if (balance < 0) return `You owe $${Math.abs(balance).toFixed(2)}`;
-    return 'All settled up';
   };
 
   return (
@@ -231,15 +316,6 @@ export function Groups() {
                   placeholder="e.g., Weekend Trip"
                   value={newGroupName}
                   onChange={(e) => setNewGroupName(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="groupDescription">Description (Optional)</Label>
-                <Input
-                  id="groupDescription"
-                  placeholder="e.g., Beach house rental and activities"
-                  value={newGroupDescription}
-                  onChange={(e) => setNewGroupDescription(e.target.value)}
                 />
               </div>
             </div>
@@ -285,7 +361,6 @@ export function Groups() {
                       <CardTitle className="text-lg">{group.name}</CardTitle>
                       <Badge variant="default">Active</Badge>
                     </div>
-                    <CardDescription>{group.description || 'No description'}</CardDescription>
                   </div>
                 
                 <DropdownMenu>

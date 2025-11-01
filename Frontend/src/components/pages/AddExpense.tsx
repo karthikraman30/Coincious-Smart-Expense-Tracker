@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -10,17 +10,22 @@ import { Badge } from '../ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { Checkbox } from '../ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '../ui/radio-group';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
-import { 
+import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
+import {
   ArrowLeft,
   DollarSign,
   Receipt,
   Users,
   Calculator,
+<<<<<<< HEAD
   Plus,
   Minus,
   User,
   Zap // Icon for AI button
+=======
+  Upload,
+  User
+>>>>>>> d0eabaf6 (Your message about the changes)
 } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -58,7 +63,11 @@ export function AddExpense() {
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
   const [selectedGroup, setSelectedGroup] = useState(preselectedGroup || '');
+<<<<<<< HEAD
   const [paidBy, setPaidBy] = useState(user?.id || ''); 
+=======
+  const [paidBy, setPaidBy] = useState('user-1');
+>>>>>>> d0eabaf6 (Your message about the changes)
   const [splitMethod, setSplitMethod] = useState<'equal' | 'unequal'>('equal');
   const [selectedMembers, setSelectedMembers] = useState<string[]>([user?.id || '']);
   const [unequalAmounts, setUnequalAmounts] = useState<{ [key: string]: string }>({});
@@ -70,7 +79,12 @@ export function AddExpense() {
 
   // Loading states
   const [loading, setLoading] = useState(false);
+<<<<<<< HEAD
   const [isCategorizing, setIsCategorizing] = useState(false);
+=======
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [isParsingReceipt, setIsParsingReceipt] = useState(false);
+>>>>>>> d0eabaf6 (Your message about the changes)
 
   // ----------------------------------------------------------------
   // DATA FETCHING (Replaces Dummy Data)
@@ -273,6 +287,123 @@ export function AddExpense() {
     return {};
   };
 
+  const handleReceiptUpload = async (file: File) => {
+    if (!file) return;
+    
+    setReceiptFile(file);
+    setIsParsingReceipt(true);
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error('Please log in to upload receipts');
+        return;
+      }
+      
+      const formData = new FormData();
+      formData.append('image', file);
+      
+      const response = await fetch('http://localhost:8000/api/parse-bill', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to parse receipt');
+      }
+      
+      const { parsed } = await response.json();
+      
+      // Auto-fill the form fields with parsed data
+      if (parsed.vendor_name) setTitle(parsed.vendor_name);
+      if (parsed.total) setAmount(parsed.total.toString());
+      if (parsed.issue_date) {
+        // Format date to YYYY-MM-DD for date input
+        const date = new Date(parsed.issue_date);
+        if (!isNaN(date.getTime())) {
+          const formattedDate = date.toISOString().split('T')[0];
+          setDescription(currentDesc => `Date: ${formattedDate}\n${parsed.notes || ''}`.trim());
+        }
+      } else if (parsed.notes) {
+        setDescription(parsed.notes);
+      }
+      
+      // Try to find a matching category
+      if (parsed.category_guess) {
+        const normalizedGuess = parsed.category_guess.toLowerCase().trim();
+        
+        // First try exact matches
+        let matchedCategory = categories.find(
+          cat => cat.value.toLowerCase() === normalizedGuess || 
+                 cat.label.toLowerCase() === normalizedGuess
+        );
+        
+        // If no exact match, try partial matches
+        if (!matchedCategory) {
+          matchedCategory = categories.find(cat => 
+            cat.label.toLowerCase().includes(normalizedGuess) ||
+            normalizedGuess.includes(cat.value.toLowerCase()) ||
+            // Try matching with common aliases
+            (cat.value === 'food' && ['restaurant', 'cafe', 'dining', 'meal'].some(alias => 
+              normalizedGuess.includes(alias)
+            )) ||
+            (cat.value === 'transportation' && ['taxi', 'uber', 'lyft', 'train', 'bus', 'gas'].some(alias => 
+              normalizedGuess.includes(alias)
+            )) ||
+            (cat.value === 'shopping' && ['store', 'mall', 'market', 'amazon', 'walmart'].some(alias => 
+              normalizedGuess.includes(alias)
+            ))
+          );
+        }
+        
+        // If still no match, try to find by keywords in the receipt data
+        if (!matchedCategory && parsed.line_items?.length > 0) {
+          const itemNames = parsed.line_items.map((item: any) => item.name?.toLowerCase() || '').join(' ');
+          matchedCategory = categories.find(cat => {
+            const keywords = {
+              'food': ['food', 'meal', 'restaurant', 'cafe', 'dining', 'grocery', 'lunch', 'dinner', 'breakfast'],
+              'transportation': ['taxi', 'uber', 'lyft', 'train', 'bus', 'gas', 'fuel', 'transport'],
+              'shopping': ['store', 'shop', 'mall', 'market', 'amazon', 'walmart', 'purchase', 'buy'],
+              'utilities': ['electric', 'water', 'internet', 'wifi', 'phone', 'cable', 'utility'],
+              'health': ['hospital', 'doctor', 'pharmacy', 'medicine', 'medical', 'health'],
+              'entertainment': ['movie', 'cinema', 'game', 'netflix', 'spotify', 'music', 'concert', 'event']
+            }[cat.value] || [];
+            
+            return keywords.some(keyword => 
+              itemNames.includes(keyword) || 
+              (parsed.vendor_name?.toLowerCase() || '').includes(keyword) ||
+              normalizedGuess.includes(keyword)
+            );
+          });
+        }
+        
+        if (matchedCategory) {
+          setCategory(matchedCategory.value);
+        } else if (parsed.vendor_name) {
+          // If we still can't match, try to guess from vendor name
+          const vendorLower = parsed.vendor_name.toLowerCase();
+          if (['mcdonalds', 'starbucks', 'kfc', 'burger', 'pizza', 'restaurant', 'cafe', 'diner'].some(k => vendorLower.includes(k))) {
+            setCategory('food');
+          } else if (['uber', 'lyft', 'taxi', 'train', 'bus', 'gas station'].some(k => vendorLower.includes(k))) {
+            setCategory('transportation');
+          } else if (['walmart', 'target', 'amazon', 'mall', 'market'].some(k => vendorLower.includes(k))) {
+            setCategory('shopping');
+          }
+        }
+      }
+      
+      toast.success('Receipt processed successfully!');
+    } catch (error) {
+      console.error('Error processing receipt:', error);
+      toast.error('Failed to process receipt. Please enter details manually.');
+    } finally {
+      setIsParsingReceipt(false);
+    }
+  };
+
   const splitAmounts = calculateSplitAmounts();
   const totalSplit = Object.values(splitAmounts).reduce((sum, amount) => sum + Number.parseFloat(amount || '0'), 0);
 
@@ -313,6 +444,7 @@ export function AddExpense() {
     }
 
     try {
+<<<<<<< HEAD
       // --- 3. "LEARNING" CALL TO PYTHON SERVER (Fire-and-Forget) ---
       // This tells the AI backend what the user manually chose, so it can learn.
       // We don't wait for this to finish ("fire-and-forget").
@@ -322,6 +454,100 @@ export function AddExpense() {
       learningFormData.append('category', category); // Pass the final category label
       
       fetch('http://localhost:8000/api/categorize', { // Make sure this port is correct!
+=======
+      // Validation
+      if (!title.trim()) {
+        toast.error('Please enter an expense title');
+        return;
+      }
+
+      if (!amount || parseFloat(amount) <= 0) {
+        toast.error('Please enter a valid amount');
+        return;
+      }
+
+      if (!category) {
+        toast.error('Please select a category');
+        return;
+      }
+
+      // Personal expense - simpler validation
+      if (expenseType === 'personal') {
+        // For personal expenses, we'll create a personal expense record
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          toast.error('Please log in to add an expense');
+          return;
+        }
+
+        // For now, we'll show a success message for personal expenses
+        // In a real app, you'd have a separate endpoint for personal expenses
+        toast.success('Personal expense added successfully!');
+        navigate('/dashboard');
+        return;
+      }
+
+      // Group expense validation
+      if (!selectedGroup) {
+        toast.error('Please select a group');
+        return;
+      }
+
+      if (selectedMembers.length === 0) {
+        toast.error('Please select at least one person to split with');
+        return;
+      }
+
+      if (splitMethod === 'unequal') {
+        // Check if all members have amounts
+        const hasAllAmounts = currentMembers.every(member => {
+          const amount = unequalAmounts[member.id];
+          return amount && amount.trim() !== '' && !isNaN(parseFloat(amount));
+        });
+
+        if (!hasAllAmounts) {
+          toast.error('Please enter valid amounts for all members');
+          return;
+        }
+
+        // Check if there are any errors
+        if (Object.keys(amountErrors).length > 0) {
+          toast.error('Please fix amount errors before submitting');
+          return;
+        }
+
+        // Validate that the sum equals the total
+        const unequalTotal = Object.values(unequalAmounts).reduce((sum, amt) => sum + parseFloat(amt || '0'), 0);
+        if (Math.abs(unequalTotal - parseFloat(amount)) > 0.01) {
+          toast.error(`Unequal amounts must add up to the total expense amount ($${parseFloat(amount).toFixed(2)})`);
+          return;
+        }
+      }
+
+      // Calculate splits
+      const totalAmount = parseFloat(amount);
+      const splits: { [key: string]: number } = {};
+
+      if (splitMethod === 'equal') {
+        const equalAmount = totalAmount / selectedMembers.length;
+        selectedMembers.forEach(memberId => {
+          splits[memberId] = equalAmount;
+        });
+      } else if (splitMethod === 'unequal') {
+        currentMembers.forEach(member => {
+          splits[member.id] = parseFloat(unequalAmounts[member.id] || '0');
+        });
+      }
+
+      // Submit to backend
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error('Please log in to add an expense');
+        return;
+      }
+
+      const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-7f88878c/expenses`, {
+>>>>>>> d0eabaf6 (Your message about the changes)
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}` },
         body: learningFormData,
@@ -713,7 +939,7 @@ export function AddExpense() {
                     <span className="font-medium">Total Expense Amount:</span>
                     <span className="font-bold">${Number.parseFloat(amount).toFixed(2)}</span>
                   </div>
-                  
+
                   {splitMethod === 'equal' && selectedMembers.length > 0 && (
                     <div className="flex justify-between items-center">
                       <span className="font-medium">Amount per Member:</span>
@@ -745,6 +971,77 @@ export function AddExpense() {
           </Card>
         )}
 
+<<<<<<< HEAD
+=======
+        {/* Receipt Upload */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Upload className="h-5 w-5" />
+              Receipt (Optional)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-6 text-center">
+              <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground mb-2">
+                {receiptFile 
+                  ? `Selected: ${receiptFile.name}` 
+                  : 'Drag and drop your receipt here, or click to browse'}
+              </p>
+              <div className="relative">
+                <input
+                  type="file"
+                  id="receipt-upload"
+                  accept="image/*,.pdf"
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      handleReceiptUpload(file);
+                    }
+                  }}
+                  disabled={isParsingReceipt}
+                />
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  disabled={isParsingReceipt}
+                >
+                  {isParsingReceipt ? (
+                    <>
+                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Processing...
+                    </>
+                  ) : receiptFile ? (
+                    'Change File'
+                  ) : (
+                    'Choose File'
+                  )}
+                </Button>
+                {receiptFile && !isParsingReceipt && (
+                  <Button 
+                    type="button" 
+                    variant="ghost" 
+                    size="sm" 
+                    className="ml-2"
+                    onClick={() => setReceiptFile(null)}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                Supported formats: JPG, PNG, PDF
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+>>>>>>> d0eabaf6 (Your message about the changes)
         {/* Submit Buttons */}
         <div className="flex gap-3">
           <Button type="button" variant="outline" className="flex-1" asChild>

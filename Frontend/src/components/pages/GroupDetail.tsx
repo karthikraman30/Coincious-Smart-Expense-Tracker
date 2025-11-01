@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -16,9 +16,13 @@ import {
   UserPlus,
   Receipt,
   TrendingUp,
-  Clock
+  Clock,
+  Loader2
 } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
+import { supabase } from '../../utils/supabase/client';
+import { toast } from 'sonner';
+import { AddMemberDialog } from '../AddMemberDialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,115 +32,107 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 
-// Mock data
-const groupData = {
-  id: '1',
-  name: 'Weekend Trip',
-  description: 'Beach house rental and activities',
-  members: [
-    { 
-      id: '1', 
-      name: 'You', 
-      email: 'you@example.com',
-      avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&h=150&fit=crop&crop=face&auto=format',
-      balance: -45.20
-    },
-    { 
-      id: '2', 
-      name: 'Sarah Johnson', 
-      email: 'sarah@example.com',
-      avatar: 'https://images.unsplash.com/photo-1494790108755-2616b612b272?w=150&h=150&fit=crop&crop=face&auto=format',
-      balance: 125.80
-    },
-    { 
-      id: '3', 
-      name: 'Mike Chen', 
-      email: 'mike@example.com',
-      avatar: 'https://images.unsplash.com/photo-1599566150163-29194dcaad36?w=150&h=150&fit=crop&crop=face&auto=format',
-      balance: -35.40
-    },
-    { 
-      id: '4', 
-      name: 'Lisa Wang', 
-      email: 'lisa@example.com',
-      avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150&h=150&fit=crop&crop=face&auto=format',
-      balance: -45.20
-    }
-  ],
-  totalExpenses: 1248.75,
-  createdAt: '2024-01-15',
-  lastActivity: '2 hours ago'
-};
+interface Member {
+  id: string;
+  email: string;
+  name: string;
+  avatar?: string;
+  balance: number;
+}
 
-const expenses = [
-  {
-    id: '1',
-    title: 'Beach House Rental',
-    amount: 800.00,
-    category: 'Accommodation',
-    date: '2024-01-20',
-    paidBy: { id: '2', name: 'Sarah Johnson' },
-    splitAmong: ['1', '2', '3', '4'],
-    description: '3-night beach house rental',
-    receipt: true
-  },
-  {
-    id: '2',
-    title: 'Grocery Shopping',
-    amount: 156.30,
-    category: 'Food & Dining',
-    date: '2024-01-20',
-    paidBy: { id: '1', name: 'You' },
-    splitAmong: ['1', '2', '3', '4'],
-    description: 'Food and drinks for the weekend'
-  },
-  {
-    id: '3',
-    title: 'Gas for Road Trip',
-    amount: 89.45,
-    category: 'Transportation',
-    date: '2024-01-19',
-    paidBy: { id: '3', name: 'Mike Chen' },
-    splitAmong: ['1', '2', '3', '4'],
-    description: 'Fuel for the drive to beach house'
-  },
-  {
-    id: '4',
-    title: 'Dinner at Seafood Restaurant',
-    amount: 203.00,
-    category: 'Food & Dining',
-    date: '2024-01-21',
-    paidBy: { id: '4', name: 'Lisa Wang' },
-    splitAmong: ['1', '2', '3', '4'],
-    description: 'Group dinner on Saturday night',
-    receipt: true
-  }
-];
+interface GroupData {
+  id: string;
+  name: string;
+  description: string;
+  members: Member[];
+  totalExpenses: number;
+  createdAt: string;
+  lastActivity: string;
+}
 
-const settlements = [
-  {
-    from: { id: '1', name: 'You' },
-    to: { id: '2', name: 'Sarah Johnson' },
-    amount: 45.20,
-    status: 'pending'
-  },
-  {
-    from: { id: '3', name: 'Mike Chen' },
-    to: { id: '2', name: 'Sarah Johnson' },
-    amount: 35.40,
-    status: 'pending'
-  },
-  {
-    from: { id: '4', name: 'Lisa Wang' },
-    to: { id: '2', name: 'Sarah Johnson' },
-    amount: 45.20,
-    status: 'pending'
-  }
-];
+const expenses: any[] = [];
+const settlements: any[] = [];
 
 export function GroupDetail() {
   const { id } = useParams();
   const [activeTab, setActiveTab] = useState('expenses');
+  const [groupData, setGroupData] = useState<GroupData>({
+    id: id || '',
+    name: 'Loading...',
+    description: '',
+    members: [],
+    totalExpenses: 0,
+    createdAt: new Date().toISOString().split('T')[0],
+    lastActivity: 'Just now'
+  });
+  const [loading, setLoading] = useState(true);
+  const [isAddMemberDialogOpen, setIsAddMemberDialogOpen] = useState(false);
+
+  const [error, setError] = useState<Error | null>(null);
+
+  const fetchGroupData = async () => {
+    if (!id) return;
+    
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('No active session');
+      }
+
+      // Make parallel requests for better performance
+      const [groupResponse, membersResponse] = await Promise.all([
+        fetch(`http://localhost:8000/api/groups/${id}`, {
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+          },
+        }),
+        fetch(`http://localhost:8000/api/groups/${id}/members`, {
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+          },
+        })
+      ]);
+
+      // Check both responses for errors
+      if (!groupResponse.ok || !membersResponse.ok) {
+        const errorData = await groupResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to fetch group data');
+      }
+
+      const [groupData, membersData] = await Promise.all([
+        groupResponse.json(),
+        membersResponse.json()
+      ]);
+      
+      setGroupData({
+        ...groupData.group,
+        members: membersData.members || [],
+      });
+    } catch (error) {
+      console.error('Error fetching group data:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to load group data';
+      setError(new Error(errorMessage));
+      toast.error(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Only fetch if there's no error
+    if (!error) {
+      fetchGroupData();
+    }
+  }, [id, error]);
+
+  const handleMemberAdded = () => {
+    fetchGroupData(); // Refresh the group data to show the new member
+  };
 
   const getCategoryIcon = (category: string) => {
     switch (category) {
@@ -160,6 +156,51 @@ export function GroupDetail() {
     return '$0.00';
   };
 
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] p-4">
+        <div className="text-center space-y-4 max-w-md">
+          <div className="bg-red-50 text-red-600 p-4 rounded-lg">
+            <h3 className="font-medium">Failed to load group data</h3>
+            <p className="text-sm mt-1">{error.message}</p>
+          </div>
+          <div className="flex gap-2 justify-center">
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setError(null);
+                fetchGroupData();
+              }}
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Retry
+            </Button>
+            <Button 
+              variant="ghost" 
+              asChild
+            >
+              <Link to="/groups">
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Back to Groups
+              </Link>
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-[60vh]">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-muted-foreground">Loading group data...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 md:p-6 space-y-6">
       {/* Header */}
@@ -171,7 +212,6 @@ export function GroupDetail() {
         </Button>
         <div className="flex-1">
           <h1 className="text-2xl md:text-3xl font-bold">{groupData.name}</h1>
-          <p className="text-muted-foreground">{groupData.description}</p>
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -186,7 +226,7 @@ export function GroupDetail() {
               <Settings className="h-4 w-4 mr-2" />
               Group Settings
             </DropdownMenuItem>
-            <DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setIsAddMemberDialogOpen(true)}>
               <UserPlus className="h-4 w-4 mr-2" />
               Add Members
             </DropdownMenuItem>
@@ -256,7 +296,23 @@ export function GroupDetail() {
         </TabsList>
 
         <TabsContent value="expenses" className="space-y-4">
-          {expenses.map((expense) => (
+          {expenses.length === 0 ? (
+            <Card>
+              <CardContent className="text-center py-12">
+                <Receipt className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                <h3 className="text-lg font-medium mb-2">No expenses yet</h3>
+                <p className="text-muted-foreground mb-4">
+                  Start adding expenses to this group.
+                </p>
+                <Button asChild>
+                  <Link to={`/add-expense?group=${id}`}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add First Expense
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+          ) : expenses.map((expense) => (
             <Card key={expense.id}>
               <CardContent className="p-4">
                 <div className="flex items-start justify-between">
@@ -385,10 +441,21 @@ export function GroupDetail() {
             </CardContent>
           </Card>
 
-          <Button variant="outline" className="w-full">
+          <Button 
+            variant="outline" 
+            className="w-full"
+            onClick={() => setIsAddMemberDialogOpen(true)}
+          >
             <UserPlus className="h-4 w-4 mr-2" />
             Add Member
           </Button>
+          
+          <AddMemberDialog
+            open={isAddMemberDialogOpen}
+            onOpenChange={setIsAddMemberDialogOpen}
+            groupId={id || ''}
+            onMemberAdded={handleMemberAdded}
+          />
         </TabsContent>
       </Tabs>
     </div>
