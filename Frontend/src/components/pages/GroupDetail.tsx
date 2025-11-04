@@ -18,12 +18,14 @@ import {
   TrendingUp,
   Clock,
   Loader2,
-  RefreshCw // <-- ADDED THIS IMPORT
+  RefreshCw,
+  Check // Added for Settle Up button
 } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { supabase } from '../../utils/supabase/client';
 import { toast } from 'sonner';
 import { AddMemberDialog } from '../AddMemberDialog';
+import { SettleUpDialog } from '../SettleUpDialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,6 +35,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 
+// --- UPDATED INTERFACES ---
 interface Member {
   id: string;
   email: string;
@@ -41,6 +44,19 @@ interface Member {
   balance: number;
 }
 
+interface BalanceData extends Member {
+  // Member already has all the fields needed
+}
+
+interface Settlement {
+  from_id: string;
+  from_name: string;
+  to_id: string;
+  to_name: string;
+  amount: number;
+}
+
+// (GroupData interface is unchanged)
 interface GroupData {
   id: string;
   name: string;
@@ -62,11 +78,11 @@ interface Expense {
     id: string;
     name: string;
   };
-  splitAmong: Array<{ id: string }>;
+  splitAmong: Array<{ id: string; name?: string }>;
   receipt?: string;
 }
 
-const settlements: any[] = [];
+// --- REMOVED DUMMY SETTLEMENTS ---
 
 export function GroupDetail() {
   const { id } = useParams();
@@ -80,12 +96,18 @@ export function GroupDetail() {
     createdAt: new Date().toISOString().split('T')[0],
     lastActivity: 'Just now'
   });
-  
+
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [isAddMemberDialogOpen, setIsAddMemberDialogOpen] = useState(false);
-
   const [error, setError] = useState<Error | null>(null);
+
+  // --- NEW STATE FOR BALANCES AND SETTLEMENTS ---
+  const [balances, setBalances] = useState<BalanceData[]>([]);
+  const [settlements, setSettlements] = useState<Settlement[]>([]);
+  const [isSettleDialogOpen, setIsSettleDialogOpen] = useState(false);
+  const [selectedSettlement, setSelectedSettlement] = useState<Settlement | null>(null);
+
 
   const fetchGroupData = async () => {
     if (!id) return;
@@ -99,39 +121,29 @@ export function GroupDetail() {
         throw new Error('No active session');
       }
 
-      // First, fetch group and members data which are essential
-      const [groupResponse, membersResponse] = await Promise.all([
+      // --- FETCH ALL DATA IN PARALLEL ---
+      const [
+        groupResponse,
+        membersResponse,
+        expensesResponse,
+        balancesResponse // New fetch call
+      ] = await Promise.all([
+        // 1. Get Group Details
         fetch(`http://localhost:8000/api/groups/${id}`, {
           headers: {
             'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json',
           },
         }),
+        // 2. Get Group Members
         fetch(`http://localhost:8000/api/groups/${id}/members`, {
           headers: {
             'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json',
           },
-        })
-      ]);
-
-      // Check for errors in essential responses
-      if (!groupResponse.ok || !membersResponse.ok) {
-        const errorData = await groupResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to fetch group data');
-      }
-
-      // Process group and members data first
-      const [groupDetailsResponse, membersData] = await Promise.all([
-        groupResponse.json(),
-        membersResponse.json()
-      ]);
-
-      // Then try to fetch expenses (non-blocking)
-      let expensesData = { expenses: [] };
-      try {
-        console.log('Fetching expenses for group:', id);
-        const expensesResponse = await fetch(`http://localhost:8000/api/expenses?group_id=${id}`, {
+        }),
+        // 3. Get Group Expenses
+        fetch(`http://localhost:8000/api/expenses?group_id=${id}`, {
           method: 'GET',
           mode: 'cors',
           credentials: 'include',
@@ -140,55 +152,81 @@ export function GroupDetail() {
             'Content-Type': 'application/json',
             'X-Requested-With': 'XMLHttpRequest'
           }
-        });
-        
+        }),
+        // 4. Get Group Balances and Settlements
+        fetch(`http://localhost:8000/api/groups/${id}/balances`, {
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+          },
+        })
+      ]);
+
+      // --- Check critical responses ---
+      if (!groupResponse.ok || !membersResponse.ok) {
+        const errorData = await groupResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to fetch group data');
+      }
+
+      const groupDetailsResponse = await groupResponse.json();
+      const membersData = await membersResponse.json();
+
+      // --- Process Expenses (non-critical) ---
+      try {
         if (expensesResponse.ok) {
-          const responseData = await expensesResponse.json();
-          console.log('Expenses API Response:', responseData);
-          expensesData = responseData;
-        } else {
-          console.warn('Failed to fetch expenses, status:', expensesResponse.status, expensesResponse.statusText);
-          const errorText = await expensesResponse.text();
-          console.warn('Error response:', errorText);
-          // If we get a 404, the endpoint might be missing, but we'll continue with empty expenses
-          if (expensesResponse.status !== 404) {
-            throw new Error(`Failed to fetch expenses: ${errorText}`);
+          const expensesData = await expensesResponse.json();
+          if (expensesData && Array.isArray(expensesData.expenses)) {
+            const formattedExpenses = expensesData.expenses.map((exp: any) => ({
+              id: exp.id,
+              title: exp.description || 'Expense',
+              amount: parseFloat(exp.amount) || 0,
+              description: exp.notes || '',
+              category: exp.category || 'Other',
+              date: exp.date || new Date().toISOString(),
+              paidBy: {
+                id: exp.paid_by.id,
+                name: exp.paid_by.name || 'Unknown'
+              },
+              splitAmong: exp.split_among || [],
+              receipt: exp.receipt_url
+            }));
+            setExpenses(formattedExpenses);
           }
+        } else {
+          console.warn('Failed to fetch expenses, continuing without them.');
         }
       } catch (expenseError) {
-        console.warn('Error fetching expenses, continuing without them:', expenseError);
-        // Don't rethrow the error, we'll continue with empty expenses
-        console.warn('Error fetching expenses:', expenseError);
+        console.warn('Error processing expenses:', expenseError);
       }
 
+      // --- Process Balances (non-critical) ---
+      try {
+        if (balancesResponse.ok) {
+          const balancesData = await balancesResponse.json();
+          setBalances(balancesData.balances || []);
+          setSettlements(balancesData.settlements || []);
+        } else {
+          console.warn('Failed to fetch balances, continuing without them.');
+        }
+      } catch (balanceError) {
+        console.warn('Error processing balances:', balanceError);
+      }
 
-      // Update state by combining all necessary data
+      // --- Set Group Data ---
       setGroupData(prevData => ({
-        ...prevData, // Keep any existing state values (like 'lastActivity')
-        ...groupDetailsResponse.group, // Add 'id', 'name', 'created_at' from the nested group object
-        totalExpenses: groupDetailsResponse.total_expenses || 0, // Explicitly add totalExpenses from the response
-        members: membersData.members || [], // Add the members array from the second response
+        ...prevData,
+        ...groupDetailsResponse.group,
+        totalExpenses: groupDetailsResponse.total_expenses || 0,
+        // Use balances data to update member list, as it's more complete
+        members: (balances.length > 0 ? balances : membersData.members).map((m: any) => ({
+          id: m.id || m.user_id,
+          name: m.name,
+          email: m.email,
+          avatar: m.avatar,
+          balance: m.balance || 0
+        })),
       }));
-      
-      // Process and set expenses if we have any
-      console.log('Processing expenses data:', expensesData);
-      if (expensesData && Array.isArray(expensesData.expenses) && expensesData.expenses.length > 0) {
-        const formattedExpenses = expensesData.expenses.map((exp: any) => ({
-          id: exp.id,
-          title: exp.description || 'Expense',
-          amount: parseFloat(exp.amount) || 0,
-          description: exp.notes || '',
-          category: exp.category || 'Other',
-          date: exp.date || new Date().toISOString(),
-          paidBy: {
-            id: exp.paid_by,
-            name: membersData.members.find((m: any) => m.id === exp.paid_by)?.name || 'Unknown'
-          },
-          splitAmong: exp.split_among?.map((id: string) => ({ id })) || [],
-          receipt: exp.receipt_url
-        }));
-        setExpenses(formattedExpenses);
-      }
+
     } catch (error) {
       console.error('Error fetching group data:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to load group data';
@@ -200,15 +238,28 @@ export function GroupDetail() {
   };
 
   useEffect(() => {
-    // Only fetch if there's no error
-    if (!error) {
-      fetchGroupData();
-    }
-  }, [id, error]);
+    fetchGroupData();
+  }, [id]); // Removed 'error' dependency to allow retries
 
   const handleMemberAdded = () => {
-    fetchGroupData(); // Refresh the group data to show the new member
+    fetchGroupData(); // Refresh all data
   };
+
+  // --- NEW: Handle opening the settle dialog ---
+  const handleOpenSettleDialog = (settlement: Settlement) => {
+    setSelectedSettlement(settlement);
+    setIsSettleDialogOpen(true);
+  };
+
+  // --- NEW: Handle settlement confirmation ---
+  const handleConfirmSettlement = (settlement: Settlement) => {
+    console.log('Settlement confirmed:', settlement);
+    // TODO: Call backend API to create a settlement transaction
+
+    // For now, just refetch the balances
+    fetchGroupData();
+  };
+
 
   const getCategoryIcon = (category: string) => {
     switch (category) {
@@ -243,10 +294,7 @@ export function GroupDetail() {
           <div className="flex gap-2 justify-center">
             <Button
               variant="outline"
-              onClick={() => {
-                setError(null);
-                fetchGroupData();
-              }}
+              onClick={fetchGroupData} // Use fetchGroupData directly
             >
               <RefreshCw className="h-4 w-4 mr-2" />
               Retry
@@ -419,7 +467,10 @@ export function GroupDetail() {
                   <div className="text-right">
                     <div className="text-lg font-bold">${expense.amount.toFixed(2)}</div>
                     <div className="text-sm text-muted-foreground">
-                      ${(expense.amount / expense.splitAmong.length).toFixed(2)} per person
+                      {expense.splitAmong.length > 0
+                        ? `$${(expense.amount / expense.splitAmong.length).toFixed(2)} per person`
+                        : `(Details missing)`
+                      }
                     </div>
                   </div>
                 </div>
@@ -428,35 +479,42 @@ export function GroupDetail() {
           ))}
         </TabsContent>
 
+        {/* --- UPDATED BALANCES TAB --- */}
         <TabsContent value="balances" className="space-y-4">
           {/* Settlements */}
           <Card>
             <CardHeader>
               <CardTitle>Settlements</CardTitle>
-              <CardDescription>Who owes whom</CardDescription>
+              <CardDescription>The simplest way to settle all debts</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {settlements.map((settlement, index) => (
-                <div key={index} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-                  <div className="flex items-center gap-3">
-                    <Avatar className="h-8 w-8">
-                      <AvatarImage src={settlement.from.id === '1' ? groupData.members[0].avatar : ''} />
-                      <AvatarFallback>{settlement.from.name.charAt(0)}</AvatarFallback>
-                    </Avatar>
-                    <div className="text-sm">
-                      <span className="font-medium">{settlement.from.name}</span>
-                      <span className="text-muted-foreground"> owes </span>
-                      <span className="font-medium">{settlement.to.name}</span>
+              {settlements.length > 0 ? (
+                settlements.map((settlement, index) => (
+                  <div key={`${settlement.from_id}-${settlement.to_id}`} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <Avatar className="h-8 w-8">
+                        <AvatarFallback>{settlement.from_name.charAt(0)}</AvatarFallback>
+                      </Avatar>
+                      <div className="text-sm">
+                        <span className="font-medium">{settlement.from_name}</span>
+                        <span className="text-muted-foreground"> owes </span>
+                        <span className="font-medium">{settlement.to_name}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-red-600">${settlement.amount.toFixed(2)}</span>
+                      <Button size="sm" onClick={() => handleOpenSettleDialog(settlement)}>
+                        <Check className="h-4 w-4 mr-2" />
+                        Settle Up
+                      </Button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-red-600">${settlement.amount.toFixed(2)}</span>
-                    <Badge variant={settlement.status === 'pending' ? 'secondary' : 'default'}>
-                      {settlement.status}
-                    </Badge>
-                  </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  All balances are settled!
+                </p>
+              )}
             </CardContent>
           </Card>
 
@@ -464,10 +522,10 @@ export function GroupDetail() {
           <Card>
             <CardHeader>
               <CardTitle>Individual Balances</CardTitle>
-              <CardDescription>Each member's balance in this group</CardDescription>
+              <CardDescription>Each member's net balance in this group</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {groupData.members.map((member) => (
+              {balances.map((member) => (
                 <div key={member.id} className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <Avatar className="h-8 w-8">
@@ -485,6 +543,7 @@ export function GroupDetail() {
           </Card>
         </TabsContent>
 
+        {/* --- UPDATED MEMBERS TAB --- */}
         <TabsContent value="members" className="space-y-4">
           <Card>
             <CardHeader>
@@ -492,7 +551,8 @@ export function GroupDetail() {
               <CardDescription>People in this expense group</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {groupData.members.map((member) => (
+              {/* Use the 'balances' array here as it's more complete */}
+              {balances.map((member) => (
                 <div key={member.id} className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <Avatar className="h-10 w-10">
@@ -534,6 +594,15 @@ export function GroupDetail() {
           />
         </TabsContent>
       </Tabs>
+
+      {/* --- ADD THE SETTLE UP DIALOG --- */}
+      <SettleUpDialog
+        open={isSettleDialogOpen}
+        onOpenChange={setIsSettleDialogOpen}
+        settlement={selectedSettlement}
+        onConfirm={handleConfirmSettlement}
+        groupId={id || ''}
+      />
     </div>
   );
 }

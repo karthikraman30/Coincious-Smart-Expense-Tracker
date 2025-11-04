@@ -2,6 +2,7 @@ import requests
 import os
 import json
 import base64
+from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -283,10 +284,10 @@ def health_check():
     return jsonify({'status': 'ok', 'message': 'Backend is running'})
 
 
+# --- THIS IS THE FIXED FUNCTION ---
 @app.route('/api/groups', methods=['GET'])
 def get_groups():
     auth_header = request.headers.get('Authorization')
-    print(f"Auth header: {auth_header}")
     
     if not auth_header or not auth_header.startswith('Bearer '):
         return jsonify({
@@ -303,8 +304,6 @@ def get_groups():
                 'details': 'Empty JWT token'
             }), 401
             
-        print(f"JWT token received (first 10 chars): {jwt[:10]}...")
-        
         try:
             user_response = categorizer.supabase.auth.get_user(jwt)
             
@@ -316,9 +315,9 @@ def get_groups():
                 }), 401
                 
             user_id = user_response.user.id
-            print(f"Successfully authenticated user: {user_id}")
             
             print("Fetching user's groups...")
+            # Step 1: Get the list of groups the user is in
             result = categorizer.supabase.table('group_members') \
                 .select('group_id, groups(*)') \
                 .eq('user_id', user_id) \
@@ -331,11 +330,35 @@ def get_groups():
                     'details': 'No data returned from database.'
                 }), 500
 
-            print(f"Found {len(result.data) if result.data else 0} groups for user {user_id}")
+            groups_list = [group['groups'] for group in result.data if group['groups']]
+            
+            # Step 2: Enrich each group with member count and total expenses
+            enriched_groups = []
+            for group in groups_list:
+                group_id = group['id']
+                
+                # Get member count
+                member_count_resp = categorizer.supabase.table('group_members') \
+                    .select('user_id', count='exact') \
+                    .eq('group_id', group_id) \
+                    .execute()
+                
+                # Get total expenses
+                expenses_resp = categorizer.supabase.table('expenses') \
+                    .select('amount') \
+                    .eq('group_id', group_id) \
+                    .execute()
+
+                group['member_count'] = member_count_resp.count if member_count_resp else 0
+                group['total_expenses'] = sum(float(exp.get('amount', 0)) for exp in (expenses_resp.data or []))
+                
+                enriched_groups.append(group)
+
+            print(f"Found and enriched {len(enriched_groups)} groups for user {user_id}")
             
             return jsonify({
                 'success': True,
-                'groups': [group['groups'] for group in result.data] if result.data else []
+                'groups': enriched_groups
             })
             
         except Exception as auth_error:
@@ -352,6 +375,8 @@ def get_groups():
             'error': 'Internal server error',
             'details': str(e)
         }), 500
+# --- END OF FIXED FUNCTION ---
+
 
 @app.route('/api/groups', methods=['POST'])
 def create_group():
@@ -388,8 +413,6 @@ def create_group():
         group = result.data[0]
         print(f"Created group: {group}")
         
-        # This is the minimal data required for a group_members insert
-        # based on all the errors we've seen.
         member_data = {
             'group_id': group['id'],
             'user_id': user_id
@@ -450,8 +473,10 @@ def get_group_members(group_id):
         if not member_check or not hasattr(member_check, 'data') or not member_check.data:
             return jsonify({'error': 'You are not a member of this group'}), 403
         
+        # --- FIX #1 ---
+        # Query only 'id' and 'email' from the public 'users' table
         members_result = categorizer.supabase.table('group_members') \
-            .select('user_id, users!inner(*)') \
+            .select('users!inner(id, email)') \
             .eq('group_id', group_id) \
             .execute()
         
@@ -462,18 +487,35 @@ def get_group_members(group_id):
         members = []
         for member in members_result.data or []:
             user = member.get('users', {})
-            members.append({
-                'id': user.get('id'),
-                'email': user.get('email'),
-                'name': user.get('full_name') or user.get('email', '').split('@')[0],
-                'balance': 0, 
-                'avatar': None
-            })
+            if user and user.get('id'):
+                user_id_str = str(user['id'])
+                user_email = user.get('email')
+                user_name = user_email.split('@')[0] if user_email else 'Unknown'
+                user_avatar = None
+
+                # Now, fetch the metadata to get the full_name
+                try:
+                    auth_user_resp = categorizer.supabase.auth.admin.get_user_by_id(user_id_str)
+                    if hasattr(auth_user_resp, 'user') and auth_user_resp.user:
+                        user_meta = auth_user_resp.user.user_metadata or {}
+                        user_name = user_meta.get('full_name') or user_name
+                        user_avatar = user_meta.get('avatar_url')
+                except Exception as e:
+                    print(f"Could not fetch metadata for user {user_id_str}: {e}")
+
+                members.append({
+                    'id': user_id_str,
+                    'email': user_email,
+                    'name': user_name,
+                    'balance': 0, # This endpoint doesn't calculate balance
+                    'avatar': user_avatar
+                })
             
         return jsonify({'members': members})
         
     except Exception as e:
         print(f"Error getting group members: {str(e)}")
+        traceback.print_exc()
         return jsonify({'error': 'Failed to fetch group members', 'details': str(e)}), 500
 
 @app.route('/api/groups/<group_id>', methods=['GET'])
@@ -510,25 +552,25 @@ def get_group_detail(group_id):
         
         group = group_result.data[0]
         
+        # --- FIX #2 ---
+        # Changed select('...*') to be specific and minimal
         members_result = categorizer.supabase.table('group_members') \
-            .select('user_id, users!inner(*)') \
+            .select('user_id', count='exact') \
             .eq('group_id', group_id) \
             .execute()
         
         expenses_result = categorizer.supabase.table('expenses') \
-            .select('*') \
+            .select('amount') \
             .eq('group_id', group_id) \
-            .order('date', desc=True) \
             .execute()
         
         total_expenses = sum(float(exp.get('amount', 0)) for exp in (expenses_result.data or [])) if expenses_result and hasattr(expenses_result, 'data') else 0
-        member_count = len(members_result.data or []) if members_result and hasattr(members_result, 'data') else 0
+        member_count = members_result.count if members_result else 0
         
         return jsonify({
             'group': group,
             'member_count': member_count,
-            'total_expenses': total_expenses,
-            'expenses': expenses_result.data or [] if expenses_result and hasattr(expenses_result, 'data') else []
+            'total_expenses': total_expenses
         }), 200
         
     except Exception as e:
@@ -541,7 +583,6 @@ def get_group_detail(group_id):
         }), 500
 
 
-# --- THIS IS THE NEW FUNCTION YOU NEED TO ADD ---
 @app.route('/api/groups/<group_id>', methods=['DELETE'])
 def delete_group(group_id):
     auth_header = request.headers.get('Authorization')
@@ -556,8 +597,6 @@ def delete_group(group_id):
             return jsonify({'error': 'Invalid user token'}), 401
         user_id = user_response.user.id
         
-        # --- Permission Check: Only the creator can delete ---
-        # 1. Fetch the group to see who created it
         print(f"User {user_id} attempting to delete group {group_id}")
         group_result = categorizer.supabase.table('groups') \
             .select('created_by') \
@@ -572,14 +611,10 @@ def delete_group(group_id):
         group_data = group_result.data
         print(f"Group created by: {group_data.get('created_by')}")
         
-        # 2. Compare creator ID with the current user's ID
         if str(group_data.get('created_by')) != str(user_id):
             print("Permission denied")
-            return jsonify({'error': 'You do not have permission to delete this group'}), 403 # 403 Forbidden
+            return jsonify({'error': 'You do not have permission to delete this group'}), 403
         
-        # --- If permission check passes, delete the group ---
-        # This assumes your Supabase tables (group_members, expenses)
-        # have "ON DELETE CASCADE" set for the group_id foreign key.
         print(f"Permission granted. Deleting group {group_id}...")
         delete_result = categorizer.supabase.table('groups') \
             .delete() \
@@ -601,7 +636,6 @@ def delete_group(group_id):
             'details': str(e),
             'trace': error_trace
         }), 500
-# --- END OF NEW FUNCTION ---
 
 
 @app.route('/api/groups/<group_id>/add-member', methods=['POST'])
@@ -631,7 +665,6 @@ def add_group_member(group_id):
         if not group_exists:
             return jsonify({'error': 'Group not found or access denied'}), 404
             
-        # Find the user by email
         try:
             user_response = categorizer.supabase.table('users') \
                 .select('*') \
@@ -642,7 +675,6 @@ def add_group_member(group_id):
             user_data = user_response.data if user_response and hasattr(user_response, 'data') else None
 
             if not user_data:
-                # If not found in public.users, try to find in auth.users
                 try:
                     user_response = categorizer.supabase.rpc('get_user_by_email', {
                         'user_email': data['email'].lower()
@@ -682,12 +714,6 @@ def add_group_member(group_id):
         if existing_member and hasattr(existing_member, 'data') and existing_member.data:
             return jsonify({'error': 'User is already a member of this group'}), 409
             
-        #
-        # --- FIX ---
-        #
-        # This is now the absolute minimal data to insert,
-        # which should match your 'group_members' table structure.
-        #
         member_data = {
             'group_id': group_id,
             'user_id': target_user.id
@@ -697,7 +723,7 @@ def add_group_member(group_id):
             result = categorizer.supabase.table('group_members').insert(member_data).execute()
         except Exception as e:
             print(f"Error during final member insert: {e}")
-            raise e # Re-raise the error
+            raise e
 
         if not result or not hasattr(result, 'data'):
              print(f"Error inserting new member: {getattr(result, 'error', 'Unknown error')}")
@@ -712,7 +738,7 @@ def add_group_member(group_id):
                 'id': target_user.id,
                 'email': target_user.email,
                 'name': full_name,
-                'role': 'member' # This is just for the frontend, not the database
+                'role': 'member'
             }
         }), 201
         
@@ -723,23 +749,19 @@ def add_group_member(group_id):
 
 @app.route('/api/expenses', methods=['GET', 'OPTIONS'])
 def get_expenses():
-    # Handle OPTIONS request
     if request.method == 'OPTIONS':
         response = app.make_default_options_response()
         return response
         
-    # Get the group_id from query parameters
     group_id = request.args.get('group_id')
     if not group_id:
         return jsonify({'error': 'Missing group_id parameter'}), 400
 
     try:
-        # Get the current user
         auth_header = request.headers.get('Authorization')
         if not auth_header:
             return jsonify({'error': 'Missing authorization'}), 401
 
-        # Initialize Supabase client
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
         if not supabase_url or not supabase_key:
@@ -747,13 +769,13 @@ def get_expenses():
             
         supabase = create_client(supabase_url, supabase_key)
         
-        # Verify the user's token
-        user = supabase.auth.get_user(auth_header.split(' ')[1])
+        user_resp = supabase.auth.get_user(auth_header.split(' ')[1])
         
-        if not user:
-            return jsonify({'error': 'Invalid user'}), 401
+        if not user_resp or not hasattr(user_resp, 'user') or not user_resp.user:
+            return jsonify({'error': 'Invalid user token'}), 401
 
-        # Query expenses for the group
+        user = user_resp.user
+
         response = supabase.table('expenses') \
             .select('*') \
             .eq('group_id', group_id) \
@@ -763,15 +785,12 @@ def get_expenses():
         if hasattr(response, 'error') and response.error:
             return jsonify({'error': str(response.error)}), 500
 
-        # Get member details for each expense
         expenses = []
         for expense in response.data:
-            # Safely get the user who paid - try different possible column names
             paid_by_id = None
             paid_by_name = 'Unknown'
             
-            # Try different possible column names
-            for field in ['paid_by', 'paid_by_user_id', 'user_id', 'created_by']:
+            for field in ['payer_id', 'paid_by', 'paid_by_user_id', 'user_id', 'created_by']:
                 if field in expense and expense[field]:
                     paid_by_id = expense[field]
                     break
@@ -780,30 +799,41 @@ def get_expenses():
                 try:
                     paid_by_user = supabase.auth.admin.get_user_by_id(str(paid_by_id))
                     if hasattr(paid_by_user, 'user') and paid_by_user.user:
-                        paid_by_name = paid_by_user.user.email or f"User {str(paid_by_id)[:8]}"
+                        user_meta = paid_by_user.user.user_metadata or {}
+                        paid_by_name = user_meta.get('full_name') or paid_by_user.user.email or f"User {str(paid_by_id)[:8]}"
                 except Exception as e:
                     print(f"Error getting user {paid_by_id}: {str(e)}")
                     paid_by_name = f"User {str(paid_by_id)[:8]}" if paid_by_id else 'Unknown'
             
-            # Get split members
             split_among = []
-            if expense.get('split_among'):
-                for user_id in expense['split_among']:
-                    try:
-                        user_data = supabase.auth.admin.get_user_by_id(user_id)
-                        if hasattr(user_data, 'user') and user_data.user:
+            try:
+                split_members_resp = supabase.table('expense_split') \
+                    .select('user_id') \
+                    .eq('expense_id', expense.get('id')) \
+                    .execute()
+                
+                split_among_ids = [s['user_id'] for s in (split_members_resp.data or [])]
+                
+                if split_among_ids:
+                    for user_id_str in split_among_ids:
+                        try:
+                            user_data = supabase.auth.admin.get_user_by_id(user_id_str)
+                            if hasattr(user_data, 'user') and user_data.user:
+                                user_meta = user_data.user.user_metadata or {}
+                                user_name = user_meta.get('full_name') or user_data.user.email or f"User {user_id_str[:8]}"
+                                split_among.append({
+                                    'id': user_id_str,
+                                    'name': user_name
+                                })
+                        except Exception as e:
+                            print(f"Error getting user {user_id_str}: {str(e)}")
                             split_among.append({
-                                'id': user_id,
-                                'name': user_data.user.email or f"User {user_id[:8]}"
+                                'id': user_id_str,
+                                'name': f"User {user_id_str[:8]}"
                             })
-                    except Exception as e:
-                        print(f"Error getting user {user_id}: {str(e)}")
-                        split_among.append({
-                            'id': user_id,
-                            'name': f"User {user_id[:8]}"
-                        })
+            except Exception as e:
+                print(f"Error fetching splits for expense {expense.get('id')}: {str(e)}")
             
-            # Build expense data with safe field access
             expense_data = {
                 'id': expense.get('id'),
                 'description': expense.get('description', 'No description'),
@@ -818,7 +848,6 @@ def get_expenses():
                 'receipt_url': expense.get('receipt_url')
             }
             
-            # Only add if we have a valid ID
             if expense_data['id']:
                 expenses.append(expense_data)
             else:
@@ -828,8 +857,289 @@ def get_expenses():
 
     except Exception as e:
         print(f"Error fetching expenses: {str(e)}")
-        traceback.print_exc()  # This will print the full traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/groups/<group_id>/balances', methods=['GET'])
+def get_group_balances(group_id):
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({'error': 'Missing or invalid authorization token'}), 401
+    
+    jwt = auth_header.split(' ')[1]
+    
+    try:
+        user_response = categorizer.supabase.auth.get_user(jwt)
+        if not user_response.user:
+            return jsonify({'error': 'Invalid user token'}), 401
+        user_id = user_response.user.id
+        
+        member_check = categorizer.supabase.table('group_members') \
+            .select('user_id') \
+            .eq('group_id', group_id) \
+            .eq('user_id', user_id) \
+            .maybe_single() \
+            .execute()
+        
+        if not member_check.data:
+            return jsonify({'error': 'You are not a member of this group'}), 403
+
+        # --- FIX #3 ---
+        # Query only 'id' and 'email' from the public 'users' table
+        members_resp = categorizer.supabase.table('group_members') \
+            .select('users!inner(id, email)') \
+            .eq('group_id', group_id) \
+            .execute()
+
+        if not members_resp.data:
+            print(f"No members found for group {group_id}. Response: {members_resp.error}")
+            return jsonify({'error': 'No members found for this group'}), 404
+
+        members = {}
+        for item in members_resp.data:
+            user = item.get('users') 
+            if user and user.get('id'): 
+                user_id_str = str(user['id'])
+                user_email = user.get('email')
+                user_name = user_email.split('@')[0] if user_email else 'Unknown'
+                user_avatar = None
+                
+                # Now, fetch the metadata to get the full_name
+                try:
+                    auth_user_resp = categorizer.supabase.auth.admin.get_user_by_id(user_id_str)
+                    if hasattr(auth_user_resp, 'user') and auth_user_resp.user:
+                        user_meta = auth_user_resp.user.user_metadata or {}
+                        user_name = user_meta.get('full_name') or user_name
+                        user_avatar = user_meta.get('avatar_url')
+                except Exception as e:
+                    print(f"Could not fetch metadata for user {user_id_str}: {e}")
+
+                members[user_id_str] = {
+                    'id': user_id_str,
+                    'name': user_name,
+                    'email': user_email,
+                    'avatar': user_avatar
+                }
+            else:
+                print(f"Skipping member item with no user data: {item}")
+
+        balances = {user_id: 0.0 for user_id in members.keys()}
+
+        expenses_resp = categorizer.supabase.table('expenses') \
+            .select('id, payer_id, amount') \
+            .eq('group_id', group_id) \
+            .execute()
+        
+        if expenses_resp.data:
+            expense_ids = [exp['id'] for exp in expenses_resp.data]
+            
+            if not expense_ids: # No expenses, so no splits to fetch
+                print("No expenses found for group, skipping splits.")
+            else:
+                splits_resp = categorizer.supabase.table('expense_split') \
+                    .select('expense_id, user_id, amount_owed') \
+                    .in_('expense_id', expense_ids) \
+                    .execute()
+                
+                splits_by_expense = {}
+                if splits_resp.data:
+                    for split in splits_resp.data:
+                        exp_id = split['expense_id']
+                        if exp_id not in splits_by_expense:
+                            splits_by_expense[exp_id] = []
+                        splits_by_expense[exp_id].append(split)
+
+                for expense in expenses_resp.data:
+                    payer_id = str(expense['payer_id'])
+                    amount = float(expense.get('amount', 0))
+
+                    if payer_id in balances:
+                        balances[payer_id] += amount # You paid
+
+                    splits = splits_by_expense.get(expense['id'], [])
+                    for split in splits:
+                        owed_user_id = str(split['user_id'])
+                        amount_owed = float(split.get('amount_owed', 0))
+                        if owed_user_id in balances:
+                            balances[owed_user_id] -= amount_owed # You owe
+
+        settlements = []
+        creditors = {uid: b for uid, b in balances.items() if b > 0.01}
+        debtors = {uid: b for uid, b in balances.items() if b < -0.01}
+
+        cred_list = sorted(creditors.items(), key=lambda x: x[1], reverse=True)
+        debt_list = sorted(debtors.items(), key=lambda x: x[1])
+
+        cred_idx = 0
+        debt_idx = 0
+
+        while cred_idx < len(cred_list) and debt_idx < len(debt_list):
+            cred_id, cred_amt = cred_list[cred_idx]
+            debt_id, debt_amt = debt_list[debt_idx]
+            
+            payment = min(cred_amt, abs(debt_amt))
+            payment = round(payment, 2)
+
+            if payment == 0:
+                break 
+
+            settlements.append({
+                'from_id': debt_id,
+                'from_name': members.get(debt_id, {}).get('name', 'Unknown'),
+                'to_id': cred_id,
+                'to_name': members.get(cred_id, {}).get('name', 'Unknown'),
+                'amount': payment
+            })
+
+            new_cred_amt = round(cred_amt - payment, 2)
+            new_debt_amt = round(debt_amt + payment, 2)
+
+            if new_cred_amt <= 0.01:
+                cred_idx += 1
+            else:
+                cred_list[cred_idx] = (cred_id, new_cred_amt)
+                
+            if new_debt_amt >= -0.01:
+                debt_idx += 1
+            else:
+                debt_list[debt_idx] = (debt_id, new_debt_amt)
+
+        final_balances = [
+            {
+                'user_id': uid,
+                'name': members[uid]['name'],
+                'avatar': members[uid].get('avatar'),
+                'email': members[uid]['email'],
+                'balance': round(balances.get(uid, 0.0), 2)
+            } for uid in members
+        ]
+
+        return jsonify({
+            'balances': final_balances,
+            'settlements': settlements
+        })
+
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"Error in get_group_balances: {str(e)}\n{error_trace}")
+        return jsonify({
+            'error': 'Internal server error',
+            'details': str(e),
+            'trace': error_trace
+        }), 500
+
+
+@app.route('/api/groups/<group_id>/settle', methods=['POST'])
+def settle_up(group_id):
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({'error': 'Missing or invalid authorization token'}), 401
+    
+    jwt = auth_header.split(' ')[1]
+    data = request.get_json()
+
+    try:
+        # --- 1. Authenticate user ---
+        user_response = categorizer.supabase.auth.get_user(jwt)
+        if not user_response.user:
+            return jsonify({'error': 'Invalid user token'}), 401
+        user_id = user_response.user.id
+
+        # --- 2. Validate Input Data ---
+        from_id = data.get('from_id')
+        to_id = data.get('to_id')
+        amount = data.get('amount')
+
+        if not all([from_id, to_id, amount]):
+            return jsonify({'error': 'Missing from_id, to_id, or amount'}), 400
+        
+        try:
+            amount_float = float(amount)
+            if amount_float <= 0:
+                raise ValueError()
+        except ValueError:
+            return jsonify({'error': 'Invalid amount'}), 400
+        
+        # --- 3. Check if user is part of this group (Authorization) ---
+        member_check = categorizer.supabase.table('group_members') \
+            .select('user_id') \
+            .eq('group_id', group_id) \
+            .eq('user_id', user_id) \
+            .maybe_single() \
+            .execute()
+        
+        if not member_check.data:
+            return jsonify({'error': 'You are not a member of this group'}), 403
+        
+        # --- 4. Create the Settlement Expense ---
+        from_user_name = "Unknown"
+        to_user_name = "Unknown"
+        try:
+            # --- THIS IS THE FIX ---
+            # We must default .user_metadata to an empty dict in case it is None
+            
+            from_user_resp = categorizer.supabase.auth.admin.get_user_by_id(from_id)
+            if from_user_resp.user:
+                user_meta = from_user_resp.user.user_metadata or {} # <-- This is the fix
+                from_user_name = user_meta.get('full_name') or from_user_name
+                
+            to_user_resp = categorizer.supabase.auth.admin.get_user_by_id(to_id)
+            if to_user_resp.user:
+                user_meta = to_user_resp.user.user_metadata or {} # <-- This is the fix
+                to_user_name = user_meta.get('full_name') or to_user_name
+            # --- END OF FIX ---
+
+        except Exception as e:
+            print(f"Error fetching user names for settlement: {e}")
+
+        expense_desc = f"Settlement: {from_user_name} paid {to_user_name}"
+
+        expense_payload = {
+            'description': expense_desc,
+            'amount': amount_float,
+            'category': 'Settlement',
+            'payer_id': from_id, # The person who was in debt is the "payer"
+            'group_id': group_id,
+            'date': datetime.now().isoformat()
+        }
+
+        expense_result = categorizer.supabase.table('expenses') \
+    .insert(expense_payload) \
+    .execute()
+        
+        if not expense_result.data or not hasattr(expense_result, 'data'):
+            print(f"Error creating expense: {getattr(expense_result, 'error', 'Unknown')}")
+            return jsonify({'error': 'Failed to create settlement expense'}), 500
+        
+        new_expense_id = expense_result.data[0]['id']
+
+        # --- 5. Create the Split ---
+        split_payload = {
+            'expense_id': new_expense_id,
+            'user_id': to_id, # The person who was *owed* money "owes" for this tx
+            'amount_owed': amount_float
+        }
+
+        split_result = categorizer.supabase.table('expense_split') \
+            .insert([split_payload]) \
+            .execute()
+
+        if not split_result.data or not hasattr(split_result, 'data'):
+            # Rollback: delete the expense
+            print(f"Error creating split: {getattr(split_result, 'error', 'Unknown')}")
+            categorizer.supabase.table('expenses').delete().eq('id', new_expense_id).execute()
+            return jsonify({'error': 'Failed to create settlement split'}), 500
+
+        return jsonify({'message': 'Settlement recorded successfully'}), 201
+
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"Error in settle_up: {str(e)}\n{error_trace}")
+        return jsonify({
+            'error': 'Internal server error',
+            'details': str(e),
+            'trace': error_trace
+        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=8000)

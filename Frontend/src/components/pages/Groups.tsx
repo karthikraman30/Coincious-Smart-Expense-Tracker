@@ -8,13 +8,6 @@ type AppUser = SupabaseUser & {
   };
 };
 
-declare module '../../contexts/AuthContext' {
-  interface AuthContextType {
-    user: AppUser | null;
-    signIn: (email: string, password: string) => Promise<void>;
-    signOut: () => Promise<void>;
-  }
-}
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -36,6 +29,7 @@ import {
   Calendar,
   MoreVertical,
   Trash,
+  Loader2 // --- IMPORT LOADER ---
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
@@ -155,13 +149,14 @@ export function Groups() {
         console.log('Groups data:', responseData);
         const userInfo = getUserDisplayInfo(user);
 
+        // --- FIX #1: Don't manually set members array here ---
         const transformedGroups = (responseData.groups || []).map((group: any) => ({
           ...group,
           id: group.id || '',
           name: group.name || 'Unnamed Group',
           created_at: group.created_at || new Date().toISOString(),
           updated_at: group.updated_at || new Date().toISOString(),
-          members: [userInfo],
+          // members: [userInfo], // <-- This was the bug
           member_count: group.member_count || 1,
           total_expenses: group.total_expenses || 0,
           yourBalance: 0,
@@ -266,12 +261,10 @@ export function Groups() {
       const newGroup = responseData.group || responseData;
       console.log('Created group:', newGroup);
 
-      const userInfo = getUserDisplayInfo(user);
-
+      // We get the member count from the backend
       setGroups(prev => [{
         ...newGroup,
         member_count: newGroup.member_count || 1,
-        members: [userInfo],
         total_expenses: 0,
         yourBalance: 0,
         lastActivity: 'Just now',
@@ -399,7 +392,8 @@ export function Groups() {
       {loading && (
         <Card>
           <CardContent className="text-center py-12">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+            {/* --- USE LOADER ICON --- */}
+            <Loader2 className="h-12 w-12 animate-spin mx-auto mb-4 text-primary" />
             <p className="text-muted-foreground">Loading your groups...</p>
           </CardContent>
         </Card>
@@ -419,7 +413,6 @@ export function Groups() {
                     </div>
                   </div>
 
-                  {/* --- THIS IS THE SIMPLIFIED DROPDOWN --- */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon">
@@ -439,7 +432,6 @@ export function Groups() {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  {/* --- END OF SIMPLIFIED DROPDOWN --- */}
 
                 </div>
               </CardHeader>
@@ -452,8 +444,9 @@ export function Groups() {
                     <Avatar className="h-6 w-6 border-2 border-background">
                       <AvatarFallback className="text-xs">You</AvatarFallback>
                     </Avatar>
+                    {/* --- FIX #2: Use group.member_count --- */}
                     <span className="text-sm text-muted-foreground ml-2">
-                      {group.members?.length || 1} member{(group.members?.length || 1) > 1 ? 's' : ''}
+                      {group.member_count || 1} member{(group.member_count || 1) !== 1 ? 's' : ''}
                     </span>
                   </div>
                 </div>
