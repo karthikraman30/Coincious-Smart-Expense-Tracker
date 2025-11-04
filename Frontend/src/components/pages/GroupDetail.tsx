@@ -5,11 +5,11 @@ import { Badge } from '../ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import { Separator } from '../ui/separator';
-import { 
+import {
   ArrowLeft,
-  Plus, 
-  Users, 
-  DollarSign, 
+  Plus,
+  Users,
+  DollarSign,
   Calendar,
   MoreVertical,
   Settings,
@@ -17,7 +17,8 @@ import {
   Receipt,
   TrendingUp,
   Clock,
-  Loader2
+  Loader2,
+  RefreshCw // <-- ADDED THIS IMPORT
 } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { supabase } from '../../utils/supabase/client';
@@ -50,7 +51,21 @@ interface GroupData {
   lastActivity: string;
 }
 
-const expenses: any[] = [];
+interface Expense {
+  id: string;
+  title: string;
+  amount: number;
+  description: string;
+  category: string;
+  date: string;
+  paidBy: {
+    id: string;
+    name: string;
+  };
+  splitAmong: Array<{ id: string }>;
+  receipt?: string;
+}
+
 const settlements: any[] = [];
 
 export function GroupDetail() {
@@ -65,6 +80,8 @@ export function GroupDetail() {
     createdAt: new Date().toISOString().split('T')[0],
     lastActivity: 'Just now'
   });
+  
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [isAddMemberDialogOpen, setIsAddMemberDialogOpen] = useState(false);
 
@@ -72,17 +89,17 @@ export function GroupDetail() {
 
   const fetchGroupData = async () => {
     if (!id) return;
-    
+
     try {
       setLoading(true);
       setError(null);
-      
+
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         throw new Error('No active session');
       }
 
-      // Make parallel requests for better performance
+      // First, fetch group and members data which are essential
       const [groupResponse, membersResponse] = await Promise.all([
         fetch(`http://localhost:8000/api/groups/${id}`, {
           headers: {
@@ -98,21 +115,80 @@ export function GroupDetail() {
         })
       ]);
 
-      // Check both responses for errors
+      // Check for errors in essential responses
       if (!groupResponse.ok || !membersResponse.ok) {
         const errorData = await groupResponse.json().catch(() => ({}));
         throw new Error(errorData.error || 'Failed to fetch group data');
       }
 
-      const [groupData, membersData] = await Promise.all([
+      // Process group and members data first
+      const [groupDetailsResponse, membersData] = await Promise.all([
         groupResponse.json(),
         membersResponse.json()
       ]);
+
+      // Then try to fetch expenses (non-blocking)
+      let expensesData = { expenses: [] };
+      try {
+        console.log('Fetching expenses for group:', id);
+        const expensesResponse = await fetch(`http://localhost:8000/api/expenses?group_id=${id}`, {
+          method: 'GET',
+          mode: 'cors',
+          credentials: 'include',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        });
+        
+        if (expensesResponse.ok) {
+          const responseData = await expensesResponse.json();
+          console.log('Expenses API Response:', responseData);
+          expensesData = responseData;
+        } else {
+          console.warn('Failed to fetch expenses, status:', expensesResponse.status, expensesResponse.statusText);
+          const errorText = await expensesResponse.text();
+          console.warn('Error response:', errorText);
+          // If we get a 404, the endpoint might be missing, but we'll continue with empty expenses
+          if (expensesResponse.status !== 404) {
+            throw new Error(`Failed to fetch expenses: ${errorText}`);
+          }
+        }
+      } catch (expenseError) {
+        console.warn('Error fetching expenses, continuing without them:', expenseError);
+        // Don't rethrow the error, we'll continue with empty expenses
+        console.warn('Error fetching expenses:', expenseError);
+      }
+
+
+      // Update state by combining all necessary data
+      setGroupData(prevData => ({
+        ...prevData, // Keep any existing state values (like 'lastActivity')
+        ...groupDetailsResponse.group, // Add 'id', 'name', 'created_at' from the nested group object
+        totalExpenses: groupDetailsResponse.total_expenses || 0, // Explicitly add totalExpenses from the response
+        members: membersData.members || [], // Add the members array from the second response
+      }));
       
-      setGroupData({
-        ...groupData.group,
-        members: membersData.members || [],
-      });
+      // Process and set expenses if we have any
+      console.log('Processing expenses data:', expensesData);
+      if (expensesData && Array.isArray(expensesData.expenses) && expensesData.expenses.length > 0) {
+        const formattedExpenses = expensesData.expenses.map((exp: any) => ({
+          id: exp.id,
+          title: exp.description || 'Expense',
+          amount: parseFloat(exp.amount) || 0,
+          description: exp.notes || '',
+          category: exp.category || 'Other',
+          date: exp.date || new Date().toISOString(),
+          paidBy: {
+            id: exp.paid_by,
+            name: membersData.members.find((m: any) => m.id === exp.paid_by)?.name || 'Unknown'
+          },
+          splitAmong: exp.split_among?.map((id: string) => ({ id })) || [],
+          receipt: exp.receipt_url
+        }));
+        setExpenses(formattedExpenses);
+      }
     } catch (error) {
       console.error('Error fetching group data:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to load group data';
@@ -165,8 +241,8 @@ export function GroupDetail() {
             <p className="text-sm mt-1">{error.message}</p>
           </div>
           <div className="flex gap-2 justify-center">
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
               onClick={() => {
                 setError(null);
                 fetchGroupData();
@@ -175,8 +251,8 @@ export function GroupDetail() {
               <RefreshCw className="h-4 w-4 mr-2" />
               Retry
             </Button>
-            <Button 
-              variant="ghost" 
+            <Button
+              variant="ghost"
               asChild
             >
               <Link to="/groups">
@@ -441,15 +517,15 @@ export function GroupDetail() {
             </CardContent>
           </Card>
 
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             className="w-full"
             onClick={() => setIsAddMemberDialogOpen(true)}
           >
             <UserPlus className="h-4 w-4 mr-2" />
             Add Member
           </Button>
-          
+
           <AddMemberDialog
             open={isAddMemberDialogOpen}
             onOpenChange={setIsAddMemberDialogOpen}

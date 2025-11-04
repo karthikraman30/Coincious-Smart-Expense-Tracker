@@ -17,15 +17,11 @@ import {
   Receipt,
   Users,
   Calculator,
-<<<<<<< HEAD
   Plus,
   Minus,
   User,
-  Zap // Icon for AI button
-=======
-  Upload,
-  User
->>>>>>> d0eabaf6 (Your message about the changes)
+  Zap, // Icon for AI button
+  Upload // Icon for Receipt Upload
 } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -36,8 +32,6 @@ import {
   SelectValue,
 } from '../ui/select';
 import { toast } from 'sonner';
-
-// This is your hardcoded category list. You can add more.
 
 // Define the shape of a group member (fetched from Supabase)
 interface GroupMember {
@@ -63,28 +57,21 @@ export function AddExpense() {
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
   const [selectedGroup, setSelectedGroup] = useState(preselectedGroup || '');
-<<<<<<< HEAD
-  const [paidBy, setPaidBy] = useState(user?.id || ''); 
-=======
-  const [paidBy, setPaidBy] = useState('user-1');
->>>>>>> d0eabaf6 (Your message about the changes)
+  const [paidBy, setPaidBy] = useState(user?.id || ''); // Correctly defaults to logged-in user
   const [splitMethod, setSplitMethod] = useState<'equal' | 'unequal'>('equal');
   const [selectedMembers, setSelectedMembers] = useState<string[]>([user?.id || '']);
   const [unequalAmounts, setUnequalAmounts] = useState<{ [key: string]: string }>({});
   const [amountErrors, setAmountErrors] = useState<{ [key: string]: string }>({});
-  
+
   // Data state
   const [groups, setGroups] = useState<any[]>([]);
   const [currentMembers, setCurrentMembers] = useState<GroupMember[]>([]);
 
   // Loading states
   const [loading, setLoading] = useState(false);
-<<<<<<< HEAD
-  const [isCategorizing, setIsCategorizing] = useState(false);
-=======
-  const [receiptFile, setReceiptFile] = useState<File | null>(null);
-  const [isParsingReceipt, setIsParsingReceipt] = useState(false);
->>>>>>> d0eabaf6 (Your message about the changes)
+  const [isCategorizing, setIsCategorizing] = useState(false); // For AI Categorize
+  const [receiptFile, setReceiptFile] = useState<File | null>(null); // For Receipt Upload
+  const [isParsingReceipt, setIsParsingReceipt] = useState(false); // For Receipt Upload
 
   // ----------------------------------------------------------------
   // DATA FETCHING (Replaces Dummy Data)
@@ -94,9 +81,9 @@ export function AddExpense() {
   useEffect(() => {
     const fetchGroups = async () => {
       if (!user) return;
-      
-      // Use the Supabase database function 'get_user_groups' we created
-      const { data, error } = await supabase.rpc('get_user_groups'); 
+
+      // Use the Supabase database function 'get_user_groups'
+      const { data, error } = await supabase.rpc('get_user_groups');
 
       if (error) {
         console.error('Error fetching groups:', error);
@@ -121,37 +108,54 @@ export function AddExpense() {
         return;
       }
 
-      // Query the group_members table and join with profiles to get names/avatars
-      const { data, error } = await supabase
-        .from('group_members')
-        .select(`
-          profiles (
-            id,
-            full_name,
-            avatar_url
-          )
-        `)
-        .eq('group_id', selectedGroup);
-      
-      if (error) {
-        console.error('Error fetching group members:', error);
-        toast.error('Could not load group members.');
-        setCurrentMembers([]);
-      } else {
-        // Re-format the data to match what the component expects
-        const members: GroupMember[] = data.map((item: any) => ({
-          id: item.profiles.id,
-          name: item.profiles.full_name || 'No Name',
-          avatar: item.profiles.avatar_url,
+      try {
+        setLoading(true);
+        
+        // Get the current session
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          throw new Error('No active session');
+        }
+
+        // Fetch members using the API endpoint
+        const response = await fetch(`http://localhost:8000/api/groups/${selectedGroup}/members`, {
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to fetch group members');
+        }
+
+        const data = await response.json();
+        const members = data.members || [];
+        
+        // Format members data
+        const formattedMembers: GroupMember[] = members.map((member: any) => ({
+          id: member.user_id || member.id,
+          name: member.name || member.email || 'No Name',
+          avatar: member.avatar_url || '',
+          email: member.email || ''
         }));
-        setCurrentMembers(members);
+        
+        setCurrentMembers(formattedMembers);
         
         // Reset split members to just the current user by default
         setSelectedMembers([user.id]);
         setPaidBy(user.id);
         setUnequalAmounts({});
         setAmountErrors({});
+        
+      } catch (error) {
+        console.error('Error fetching group members:', error);
+        toast.error('Could not load group members. Please try again.');
+        setCurrentMembers([]);
+      } finally {
+        setLoading(false);
       }
+      // --- END OF MODIFICATION ---
     };
 
     fetchGroupMembers();
@@ -162,7 +166,7 @@ export function AddExpense() {
     const fetchCategories = async () => {
       if (!user) return; // Wait for the user to be loaded
 
-      // Call the database function we just created
+      // Call the database function
       const { data, error } = await supabase.rpc('get_all_user_categories');
 
       if (error) {
@@ -180,7 +184,7 @@ export function AddExpense() {
 
 
   // ----------------------------------------------------------------
-  // AI FEATURE HANDLERS
+  // AI/FEATURE HANDLERS
   // ----------------------------------------------------------------
 
   const handleAICategorize = async () => {
@@ -211,24 +215,106 @@ export function AddExpense() {
       const aiCategoryLabel = result.category;
 
       if (aiCategoryLabel) {
-        // --- THIS IS THE FIX ---
         // Check if the AI's suggestion is already in our dropdown
         if (!availableCategories.includes(aiCategoryLabel)) {
-          // If not, add it to our state so it's in the list!
+          // If not, add it to our state so it's in the list
           setAvailableCategories(prevCategories => [...prevCategories, aiCategoryLabel]);
         }
         // Now, set the dropdown to the AI's suggestion
         setCategory(aiCategoryLabel);
-        toast.success(`AI suggested: ${aiCategoryLabel}`, { id: toastId }); 
+        toast.success(`AI suggested: ${aiCategoryLabel}`, { id: toastId });
       } else {
         throw new Error("AI could not determine a category.");
       }
 
     } catch (error: any) {
-      // 3. UPDATE the original toast with an error message
-      toast.error(error.message || 'Failed to get AI category.', { id: toastId }); 
+      toast.error(error.message || 'Failed to get AI category.', { id: toastId });
     } finally {
       setIsCategorizing(false);
+    }
+  };
+
+  const handleReceiptUpload = async (file: File) => {
+    if (!file) return;
+
+    setReceiptFile(file);
+    setIsParsingReceipt(true);
+    const toastId = toast.loading('Parsing receipt...');
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error('Please log in to upload receipts', { id: toastId });
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('image', file);
+
+      const response = await fetch('http://localhost:8000/api/parse-bill', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to parse receipt');
+      }
+
+      const { parsed } = await response.json();
+
+      // Auto-fill the form fields with parsed data
+      if (parsed.vendor_name) setTitle(parsed.vendor_name);
+      if (parsed.total) setAmount(parsed.total.toString());
+      if (parsed.issue_date) {
+        const date = new Date(parsed.issue_date);
+        if (!isNaN(date.getTime())) {
+          const formattedDate = date.toISOString().split('T')[0];
+          setDescription(currentDesc => `Date: ${formattedDate}\n${parsed.notes || ''}`.trim());
+        }
+      } else if (parsed.notes) {
+        setDescription(parsed.notes);
+      }
+
+      // Try to find a matching category (MODIFIED to use string array)
+      if (parsed.category_guess) {
+        const normalizedGuess = parsed.category_guess.toLowerCase().trim();
+
+        // Find a match in the user's availableCategories
+        let matchedCategory = availableCategories.find(
+          cat => cat.toLowerCase() === normalizedGuess
+        );
+
+        // If no exact match, try partial match
+        if (!matchedCategory) {
+          matchedCategory = availableCategories.find(cat =>
+            cat.toLowerCase().includes(normalizedGuess) ||
+            normalizedGuess.includes(cat.toLowerCase())
+          );
+        }
+
+        // If a match is found, set it.
+        if (matchedCategory) {
+          setCategory(matchedCategory);
+        } else {
+          // If no match, but the AI gave a guess, add it as a new category
+          // and select it.
+          const capitalizedGuess = parsed.category_guess.charAt(0).toUpperCase() + parsed.category_guess.slice(1);
+          if (!availableCategories.includes(capitalizedGuess)) {
+            setAvailableCategories(prev => [...prev, capitalizedGuess]);
+          }
+          setCategory(capitalizedGuess);
+        }
+      }
+
+      toast.success('Receipt processed successfully!', { id: toastId });
+    } catch (error) {
+      console.error('Error processing receipt:', error);
+      toast.error('Failed to process receipt. Please enter details manually.', { id: toastId });
+    } finally {
+      setIsParsingReceipt(false);
     }
   };
 
@@ -287,123 +373,6 @@ export function AddExpense() {
     return {};
   };
 
-  const handleReceiptUpload = async (file: File) => {
-    if (!file) return;
-    
-    setReceiptFile(file);
-    setIsParsingReceipt(true);
-    
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        toast.error('Please log in to upload receipts');
-        return;
-      }
-      
-      const formData = new FormData();
-      formData.append('image', file);
-      
-      const response = await fetch('http://localhost:8000/api/parse-bill', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        throw new Error('Failed to parse receipt');
-      }
-      
-      const { parsed } = await response.json();
-      
-      // Auto-fill the form fields with parsed data
-      if (parsed.vendor_name) setTitle(parsed.vendor_name);
-      if (parsed.total) setAmount(parsed.total.toString());
-      if (parsed.issue_date) {
-        // Format date to YYYY-MM-DD for date input
-        const date = new Date(parsed.issue_date);
-        if (!isNaN(date.getTime())) {
-          const formattedDate = date.toISOString().split('T')[0];
-          setDescription(currentDesc => `Date: ${formattedDate}\n${parsed.notes || ''}`.trim());
-        }
-      } else if (parsed.notes) {
-        setDescription(parsed.notes);
-      }
-      
-      // Try to find a matching category
-      if (parsed.category_guess) {
-        const normalizedGuess = parsed.category_guess.toLowerCase().trim();
-        
-        // First try exact matches
-        let matchedCategory = categories.find(
-          cat => cat.value.toLowerCase() === normalizedGuess || 
-                 cat.label.toLowerCase() === normalizedGuess
-        );
-        
-        // If no exact match, try partial matches
-        if (!matchedCategory) {
-          matchedCategory = categories.find(cat => 
-            cat.label.toLowerCase().includes(normalizedGuess) ||
-            normalizedGuess.includes(cat.value.toLowerCase()) ||
-            // Try matching with common aliases
-            (cat.value === 'food' && ['restaurant', 'cafe', 'dining', 'meal'].some(alias => 
-              normalizedGuess.includes(alias)
-            )) ||
-            (cat.value === 'transportation' && ['taxi', 'uber', 'lyft', 'train', 'bus', 'gas'].some(alias => 
-              normalizedGuess.includes(alias)
-            )) ||
-            (cat.value === 'shopping' && ['store', 'mall', 'market', 'amazon', 'walmart'].some(alias => 
-              normalizedGuess.includes(alias)
-            ))
-          );
-        }
-        
-        // If still no match, try to find by keywords in the receipt data
-        if (!matchedCategory && parsed.line_items?.length > 0) {
-          const itemNames = parsed.line_items.map((item: any) => item.name?.toLowerCase() || '').join(' ');
-          matchedCategory = categories.find(cat => {
-            const keywords = {
-              'food': ['food', 'meal', 'restaurant', 'cafe', 'dining', 'grocery', 'lunch', 'dinner', 'breakfast'],
-              'transportation': ['taxi', 'uber', 'lyft', 'train', 'bus', 'gas', 'fuel', 'transport'],
-              'shopping': ['store', 'shop', 'mall', 'market', 'amazon', 'walmart', 'purchase', 'buy'],
-              'utilities': ['electric', 'water', 'internet', 'wifi', 'phone', 'cable', 'utility'],
-              'health': ['hospital', 'doctor', 'pharmacy', 'medicine', 'medical', 'health'],
-              'entertainment': ['movie', 'cinema', 'game', 'netflix', 'spotify', 'music', 'concert', 'event']
-            }[cat.value] || [];
-            
-            return keywords.some(keyword => 
-              itemNames.includes(keyword) || 
-              (parsed.vendor_name?.toLowerCase() || '').includes(keyword) ||
-              normalizedGuess.includes(keyword)
-            );
-          });
-        }
-        
-        if (matchedCategory) {
-          setCategory(matchedCategory.value);
-        } else if (parsed.vendor_name) {
-          // If we still can't match, try to guess from vendor name
-          const vendorLower = parsed.vendor_name.toLowerCase();
-          if (['mcdonalds', 'starbucks', 'kfc', 'burger', 'pizza', 'restaurant', 'cafe', 'diner'].some(k => vendorLower.includes(k))) {
-            setCategory('food');
-          } else if (['uber', 'lyft', 'taxi', 'train', 'bus', 'gas station'].some(k => vendorLower.includes(k))) {
-            setCategory('transportation');
-          } else if (['walmart', 'target', 'amazon', 'mall', 'market'].some(k => vendorLower.includes(k))) {
-            setCategory('shopping');
-          }
-        }
-      }
-      
-      toast.success('Receipt processed successfully!');
-    } catch (error) {
-      console.error('Error processing receipt:', error);
-      toast.error('Failed to process receipt. Please enter details manually.');
-    } finally {
-      setIsParsingReceipt(false);
-    }
-  };
-
   const splitAmounts = calculateSplitAmounts();
   const totalSplit = Object.values(splitAmounts).reduce((sum, amount) => sum + Number.parseFloat(amount || '0'), 0);
 
@@ -427,7 +396,6 @@ export function AddExpense() {
       setLoading(false);
       return;
     }
-    // 'category' is now a string like "Food & Dining", so we just check if it's selected
     if (!category) {
       toast.error('Please select a category');
       setLoading(false);
@@ -435,7 +403,6 @@ export function AddExpense() {
     }
 
     // --- 2. GET SUPABASE SESSION ---
-    // We need the user's ID and token for both Supabase and the Python server
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token || !user) {
       toast.error('Please log in to add an expense');
@@ -444,110 +411,14 @@ export function AddExpense() {
     }
 
     try {
-<<<<<<< HEAD
       // --- 3. "LEARNING" CALL TO PYTHON SERVER (Fire-and-Forget) ---
       // This tells the AI backend what the user manually chose, so it can learn.
-      // We don't wait for this to finish ("fire-and-forget").
       const learningFormData = new FormData();
       learningFormData.append('description', title);
       learningFormData.append('amount', String(finalAmount));
       learningFormData.append('category', category); // Pass the final category label
-      
+
       fetch('http://localhost:8000/api/categorize', { // Make sure this port is correct!
-=======
-      // Validation
-      if (!title.trim()) {
-        toast.error('Please enter an expense title');
-        return;
-      }
-
-      if (!amount || parseFloat(amount) <= 0) {
-        toast.error('Please enter a valid amount');
-        return;
-      }
-
-      if (!category) {
-        toast.error('Please select a category');
-        return;
-      }
-
-      // Personal expense - simpler validation
-      if (expenseType === 'personal') {
-        // For personal expenses, we'll create a personal expense record
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.access_token) {
-          toast.error('Please log in to add an expense');
-          return;
-        }
-
-        // For now, we'll show a success message for personal expenses
-        // In a real app, you'd have a separate endpoint for personal expenses
-        toast.success('Personal expense added successfully!');
-        navigate('/dashboard');
-        return;
-      }
-
-      // Group expense validation
-      if (!selectedGroup) {
-        toast.error('Please select a group');
-        return;
-      }
-
-      if (selectedMembers.length === 0) {
-        toast.error('Please select at least one person to split with');
-        return;
-      }
-
-      if (splitMethod === 'unequal') {
-        // Check if all members have amounts
-        const hasAllAmounts = currentMembers.every(member => {
-          const amount = unequalAmounts[member.id];
-          return amount && amount.trim() !== '' && !isNaN(parseFloat(amount));
-        });
-
-        if (!hasAllAmounts) {
-          toast.error('Please enter valid amounts for all members');
-          return;
-        }
-
-        // Check if there are any errors
-        if (Object.keys(amountErrors).length > 0) {
-          toast.error('Please fix amount errors before submitting');
-          return;
-        }
-
-        // Validate that the sum equals the total
-        const unequalTotal = Object.values(unequalAmounts).reduce((sum, amt) => sum + parseFloat(amt || '0'), 0);
-        if (Math.abs(unequalTotal - parseFloat(amount)) > 0.01) {
-          toast.error(`Unequal amounts must add up to the total expense amount ($${parseFloat(amount).toFixed(2)})`);
-          return;
-        }
-      }
-
-      // Calculate splits
-      const totalAmount = parseFloat(amount);
-      const splits: { [key: string]: number } = {};
-
-      if (splitMethod === 'equal') {
-        const equalAmount = totalAmount / selectedMembers.length;
-        selectedMembers.forEach(memberId => {
-          splits[memberId] = equalAmount;
-        });
-      } else if (splitMethod === 'unequal') {
-        currentMembers.forEach(member => {
-          splits[member.id] = parseFloat(unequalAmounts[member.id] || '0');
-        });
-      }
-
-      // Submit to backend
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        toast.error('Please log in to add an expense');
-        return;
-      }
-
-      const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-7f88878c/expenses`, {
->>>>>>> d0eabaf6 (Your message about the changes)
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}` },
         body: learningFormData,
@@ -556,10 +427,10 @@ export function AddExpense() {
         console.error("AI Learning call failed (this is non-critical):", err)
       });
 
-      
+
       // --- 4. SAVE THE EXPENSE TO SUPABASE DATABASE ---
       if (expenseType === 'personal') {
-        
+
         // --- Save a Personal Expense ---
         const { error: expenseError } = await supabase
           .from('expenses')
@@ -578,9 +449,9 @@ export function AddExpense() {
         navigate('/dashboard'); // Go back to the dashboard
 
       } else {
-        
+
         // --- Save a Group Expense ---
-        
+
         // Group-specific validation
         if (!selectedGroup) {
           toast.error('Please select a group');
@@ -595,7 +466,7 @@ export function AddExpense() {
 
         // Calculate final splits
         const finalSplits: { user_id: string, amount_owed: number }[] = [];
-        
+
         if (splitMethod === 'equal') {
           const equalAmount = finalAmount / selectedMembers.length;
           selectedMembers.forEach(memberId => {
@@ -609,9 +480,9 @@ export function AddExpense() {
             return;
           }
           currentMembers.forEach(member => {
-            finalSplits.push({ 
-              user_id: member.id, 
-              amount_owed: parseFloat(unequalAmounts[member.id] || '0') 
+            finalSplits.push({
+              user_id: member.id,
+              amount_owed: parseFloat(unequalAmounts[member.id] || '0')
             });
           });
         }
@@ -629,7 +500,7 @@ export function AddExpense() {
         });
 
         if (rpcError) throw rpcError;
-        
+
         toast.success('Group expense added successfully!');
         navigate('/groups/' + selectedGroup); // Go to the group page
       }
@@ -728,15 +599,15 @@ export function AddExpense() {
                       <SelectItem key={categoryName} value={categoryName}>
                         {categoryName}
                       </SelectItem>
-                  ))}
+                    ))}
                 </SelectContent>
               </Select>
               {/* AI Categorize Button */}
-              <Button 
-                type="button" 
-                variant="outline" 
-                size="sm" 
-                onClick={handleAICategorize} 
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleAICategorize}
                 disabled={isCategorizing || !title.trim()}
                 className="w-full flex items-center gap-2"
               >
@@ -960,7 +831,7 @@ export function AddExpense() {
                       {Math.abs(totalSplit - parseFloat(amount)) > 0.01 && (
                         <div className="flex justify-between items-center text-sm text-red-600">
                           <span>Remaining to allocate:</span>
-                            <span>${Math.abs(Number.parseFloat(amount) - totalSplit).toFixed(2)}</span>
+                          <span>${Math.abs(Number.parseFloat(amount) - totalSplit).toFixed(2)}</span>
                         </div>
                       )}
                     </>
@@ -971,8 +842,6 @@ export function AddExpense() {
           </Card>
         )}
 
-<<<<<<< HEAD
-=======
         {/* Receipt Upload */}
         <Card>
           <CardHeader>
@@ -985,8 +854,8 @@ export function AddExpense() {
             <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-6 text-center">
               <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
               <p className="text-sm text-muted-foreground mb-2">
-                {receiptFile 
-                  ? `Selected: ${receiptFile.name}` 
+                {receiptFile
+                  ? `Selected: ${receiptFile.name}`
                   : 'Drag and drop your receipt here, or click to browse'}
               </p>
               <div className="relative">
@@ -1003,9 +872,11 @@ export function AddExpense() {
                   }}
                   disabled={isParsingReceipt}
                 />
-                <Button 
-                  variant="outline" 
+                <Button
+                  type="button" // Important: type="button" so it doesn't submit the form
+                  variant="outline"
                   size="sm"
+                  onClick={() => document.getElementById('receipt-upload')?.click()} // Manually trigger file input
                   disabled={isParsingReceipt}
                 >
                   {isParsingReceipt ? (
@@ -1023,10 +894,10 @@ export function AddExpense() {
                   )}
                 </Button>
                 {receiptFile && !isParsingReceipt && (
-                  <Button 
-                    type="button" 
-                    variant="ghost" 
-                    size="sm" 
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
                     className="ml-2"
                     onClick={() => setReceiptFile(null)}
                   >
@@ -1041,13 +912,12 @@ export function AddExpense() {
           </CardContent>
         </Card>
 
->>>>>>> d0eabaf6 (Your message about the changes)
         {/* Submit Buttons */}
         <div className="flex gap-3">
           <Button type="button" variant="outline" className="flex-1" asChild>
             <Link to="/dashboard">Cancel</Link>
           </Button>
-          <Button type="submit" className="flex-1" disabled={loading || isCategorizing}>
+          <Button type="submit" className="flex-1" disabled={loading || isCategorizing || isParsingReceipt}>
             {loading ? 'Adding Expense...' : 'Add Expense'}
           </Button>
         </div>

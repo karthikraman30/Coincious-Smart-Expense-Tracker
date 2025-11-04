@@ -55,7 +55,7 @@ export function AddMemberDialog({ open, onOpenChange, groupId, onMemberAdded }: 
     try {
       setLoading(true);
       setError('');
-      
+
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         throw new Error('No active session');
@@ -130,14 +130,14 @@ export function AddMemberDialog({ open, onOpenChange, groupId, onMemberAdded }: 
           </div>
         </div>
         <DialogFooter>
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             onClick={() => onOpenChange(false)}
             disabled={loading}
           >
             Cancel
           </Button>
-          <Button 
+          <Button
             onClick={handleAddMember}
             disabled={loading || !formData.name.trim() || !formData.email.trim()}
           >
