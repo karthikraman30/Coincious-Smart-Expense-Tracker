@@ -638,6 +638,9 @@ def delete_group(group_id):
         }), 500
 
 
+
+
+# --- FIX: This function is now corrected ---
 @app.route('/api/groups/<group_id>/add-member', methods=['POST'])
 def add_group_member(group_id):
     auth_header = request.headers.get('Authorization')
@@ -654,89 +657,111 @@ def add_group_member(group_id):
         if not data or 'email' not in data:
             return jsonify({'error': 'Email is required'}), 400
             
-        group_response = categorizer.supabase.rpc('get_user_groups', {'user_uuid': requesting_user.id}).execute()
-        
-        if not group_response or not hasattr(group_response, 'data'):
-            print(f"Error calling rpc get_user_groups for user {requesting_user.id}")
-            return jsonify({'error': 'Failed to verify group membership'}), 500
+        # Check if the requesting user is in the group
+        group_response = categorizer.supabase.table('group_members') \
+            .select('user_id') \
+            .eq('group_id', group_id) \
+            .eq('user_id', requesting_user.id) \
+            .maybe_single() \
+            .execute()
 
-        group_exists = any(str(group['id']) == group_id for group in (group_response.data or []))
-        
-        if not group_exists:
+        if not group_response.data:
             return jsonify({'error': 'Group not found or access denied'}), 404
             
-        try:
-            user_response = categorizer.supabase.table('users') \
-                .select('*') \
-                .eq('email', data['email'].lower()) \
-                .maybe_single() \
-                .execute()
-            
-            user_data = user_response.data if user_response and hasattr(user_response, 'data') else None
+        # Find the user by email
+        target_user_id = None
+        target_user_email = data['email'].lower()
+        target_user_metadata = {}
+        target_user_name_from_input = data.get('name', '').strip()
 
-            if not user_data:
-                try:
-                    user_response = categorizer.supabase.rpc('get_user_by_email', {
-                        'user_email': data['email'].lower()
-                    }).execute()
+        # 1. Check public 'users' table first
+        user_response = categorizer.supabase.table('users') \
+            .select('*') \
+            .eq('email', target_user_email) \
+            .maybe_single() \
+            .execute()
+        
+        user_data = user_response.data if user_response and hasattr(user_response, 'data') else None
+
+        if user_data:
+            # User already exists in public.users
+            print(f"Found user in public.users: {user_data['id']}")
+            target_user_id = user_data['id']
+            try:
+                auth_user_resp = categorizer.supabase.auth.admin.get_user_by_id(target_user_id)
+                if auth_user_resp.user:
+                    target_user_metadata = auth_user_resp.user.user_metadata or {}
+            except Exception as e:
+                 print(f"Could not fetch metadata for existing user {target_user_id}: {e}")
+
+        else:
+            # 2. User not in public.users, check auth.users via RPC
+            print(f"User not in public.users, checking auth...")
+            try:
+                rpc_response = categorizer.supabase.rpc('get_user_by_email', {
+                    'user_email': target_user_email
+                }).execute()
+                
+                if not rpc_response.data:
+                    return jsonify({'error': 'User with this email does not exist in the system'}), 404
                     
-                    if not user_response or not hasattr(user_response, 'data') or not user_response.data:
-                        return jsonify({'error': 'User with this email does not exist'}), 404
-                        
-                    user_data = user_response.data[0]
-                    target_user = type('User', (), {
-                        'id': user_data['id'],
-                        'email': user_data['email'],
-                        'user_metadata': user_data.get('raw_user_meta_data', {}) or {}
-                    })
-                    
-                except Exception as e:
-                    print(f"Error looking up user in auth.users: {str(e)}")
-                    return jsonify({'error': 'Error looking up user information'}), 500
-            else:
-                target_user = type('User', (), {
-                    'id': user_data['id'],
-                    'email': user_data['email'],
-                    'user_metadata': user_data.get('user_metadata', {}) or {}
-                })
+                auth_user_data = rpc_response.data[0]
+                target_user_id = auth_user_data['id']
+                target_user_metadata = auth_user_data.get('raw_user_meta_data', {}) or {}
+                print(f"Found user in auth: {target_user_id}")
+
+                # --- THIS IS THE FIX ---
+                # User exists in auth, but not public.users. We must create them.
+                public_user_name = target_user_metadata.get('full_name') or target_user_name_from_input or target_user_email.split('@')[0]
+                
+                new_user_record = {
+                    'id': target_user_id,
+                    'email': target_user_email,
+                    'full_name': public_user_name
+                }
+                
+                print(f"Creating public user record: {new_user_record}")
+                # Use upsert to be safe, in case of a race condition
+                upsert_resp = categorizer.supabase.table('users').upsert(new_user_record).execute()
+                if not upsert_resp.data and upsert_resp.error:
+                     print(f"Error upserting user to public.users: {getattr(upsert_resp, 'error', 'Unknown')}")
+                     return jsonify({'error': 'Failed to create user profile'}), 500
+                # --- END OF FIX ---
+
+            except Exception as e:
+                print(f"Error looking up user in auth.users: {str(e)}")
+                return jsonify({'error': 'Error looking up user information'}), 500
             
-        except Exception as e:
-            print(f"Error in user lookup: {str(e)}")
-            return jsonify({'error': 'Error looking up user information'}), 500
-            
+        # 3. Check if user is already in the group
         existing_member = categorizer.supabase.table('group_members') \
             .select('*') \
             .eq('group_id', group_id) \
-            .eq('user_id', target_user.id) \
+            .eq('user_id', target_user_id) \
             .maybe_single() \
             .execute()
             
         if existing_member and hasattr(existing_member, 'data') and existing_member.data:
             return jsonify({'error': 'User is already a member of this group'}), 409
             
+        # 4. Add user to group_members
         member_data = {
             'group_id': group_id,
-            'user_id': target_user.id
+            'user_id': target_user_id
         }
         
-        try:
-            result = categorizer.supabase.table('group_members').insert(member_data).execute()
-        except Exception as e:
-            print(f"Error during final member insert: {e}")
-            raise e
+        result = categorizer.supabase.table('group_members').insert([member_data]).execute()
 
         if not result or not hasattr(result, 'data'):
              print(f"Error inserting new member: {getattr(result, 'error', 'Unknown error')}")
              return jsonify({'error': 'Failed to add member to group database'}), 500
 
-        user_metadata = getattr(target_user, 'user_metadata', {}) or {}
-        full_name = user_metadata.get('full_name', data.get('name', data['email'].split('@')[0]))
+        full_name = target_user_metadata.get('full_name', target_user_name_from_input or target_user_email.split('@')[0])
         
         return jsonify({
             'message': 'Member added successfully',
             'member': {
-                'id': target_user.id,
-                'email': target_user.email,
+                'id': target_user_id,
+                'email': target_user_email,
                 'name': full_name,
                 'role': 'member'
             }
